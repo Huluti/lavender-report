@@ -179,12 +179,11 @@ for refund in refunds:
     progress_count += 1
     sys.stdout.write(f"\rFetch refund {progress_count}/{total_transactions}...")
     sys.stdout.flush()
-
-    # Obtenez les informations sur la transaction de solde
+ 
     balance_transaction = stripe.BalanceTransaction.retrieve(
         refund['balance_transaction'])
 
-    amount_refunded = balance_transaction['amount'] / 100  # Montant remboursé
+    amount_refunded = balance_transaction['amount'] / 100
     currency = balance_transaction['currency'].upper()
 
     total_refunds += amount_refunded
@@ -202,7 +201,7 @@ sys.stdout.write('\r' + ' ' * 50 + '\r')
 sys.stdout.flush()
 print("Fetching done!")
 
-# Résumé
+# Summary
 print("\nSummary:")
 print(f"Number of transactions: {transaction_count}")
 print(f"Total in EUR: {total_eur:.2f} EUR")
@@ -223,10 +222,8 @@ def print_transaction_details(transactions, category_name):
 # Payments
 
 print_transaction_details(transactions_in_country, "Domestic transactions (your company’s country)")
-print_transaction_details(transactions_in_eu_with_vat,
-                          "Intra-EU transactions (with VAT)")
-print_transaction_details(transactions_in_eu_without_vat,
-                          "Intra-EU transactions (with reverse-charged VAT")
+print_transaction_details(transactions_in_eu_with_vat, "Intra-EU transactions (with VAT)")
+print_transaction_details(transactions_in_eu_without_vat, "Intra-EU transactions (with reverse-charged VAT")
 print_transaction_details(transactions_outside_eu, "Extra-EU transactions")
 print_transaction_details(transactions_unknown_country, "Unknown transactions")
 
