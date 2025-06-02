@@ -22,7 +22,7 @@ def to_timestamp(date_str):
 # Get user infos to start program
 # TODO: switch to command line arguments
 # TODO: add a timezone argument (default to UTC or country's timezone)
-country = int(input("Enter country (XX): "))
+country = input("Enter country (XX): ")
 year = int(input("Enter year (YYYY): "))
 month = int(input("Enter month (MM): "))
 
@@ -35,7 +35,7 @@ end_date = f"{year}-{month:02d}-{last_day}"
 start_timestamp = to_timestamp(start_date)
 end_timestamp = to_timestamp(end_date) + 86399  # Very last moment of last day
 
-print(f"\Fetch transactions from {start_date} to {end_date}")
+print(f"Fetch transactions from {start_date} to {end_date}")
 
 # Fetch payments from given period
 # Fetch more than you need, filter later
@@ -79,8 +79,7 @@ total_transactions = len(filtered_charges)
 for charge in filtered_charges:
     # Update progress
     progress_count += 1
-    sys.stdout.write(
-        f"\Fetch transaction {progress_count}/{total_transactions}...")
+    sys.stdout.write(f"\rFetch transaction {progress_count}/{total_transactions}...")
     sys.stdout.flush()
 
     if not charge.paid:
@@ -97,7 +96,7 @@ for charge in filtered_charges:
     vat_number = 'Not available'
     vat_applied = False
     fee = 0
-    invoice_id = payment.invoice
+    invoice_id = payment.get("invoice")
     if invoice_id:
         # Retrieve the Invoice
         invoice = stripe.Invoice.retrieve(invoice_id)
@@ -168,6 +167,9 @@ for charge in filtered_charges:
     else:
         transactions_outside_eu.append(transaction_details)
 
+sys.stdout.write('\r' + ' ' * 50 + '\r')
+sys.stdout.flush()
+
 # Initialize progress counter
 progress_count = 0
 total_transactions = len(refunds)
@@ -175,8 +177,7 @@ total_transactions = len(refunds)
 for refund in refunds:
     # Update progress
     progress_count += 1
-    sys.stdout.write(
-        f"\rFetch refund {progress_count}/{total_transactions}...")
+    sys.stdout.write(f"\rFetch refund {progress_count}/{total_transactions}...")
     sys.stdout.flush()
 
     # Obtenez les informations sur la transaction de solde
@@ -197,11 +198,12 @@ for refund in refunds:
     transactions_refunds.append(refund_details)
 
 # Finish progress counter
-sys.stdout.write("\n")
+sys.stdout.write('\r' + ' ' * 50 + '\r')
+sys.stdout.flush()
 print("Fetching done!")
 
 # Résumé
-print("Summary:")
+print("\nSummary:")
 print(f"Number of transactions: {transaction_count}")
 print(f"Total in EUR: {total_eur:.2f} EUR")
 print(f"Total Stripe fees: {total_fees:.2f} EUR")
