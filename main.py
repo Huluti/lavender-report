@@ -25,9 +25,9 @@ parser.add_argument('--month', type=int, help="Month", default=last_month)
 
 args = parser.parse_args()
 
-country = args.country
-year = args.year
-month = args.month
+arg_country = args.country
+arg_year = args.year
+arg_month = args.month
 
 # Convert dates in timestamps (UTC+1)
 def to_timestamp(date_str):
@@ -37,9 +37,9 @@ def to_timestamp(date_str):
     return int(dt_utc.timestamp())
 
 # Find first and last day of month
-start_date = f"{year}-{month:02d}-01"
-last_day = calendar.monthrange(year, month)[1]  # Nb days in the month
-end_date = f"{year}-{month:02d}-{last_day}"
+start_date = f"{arg_year}-{arg_month:02d}-01"
+last_day = calendar.monthrange(arg_year, arg_month)[1]  # Nb days in the month
+end_date = f"{arg_year}-{arg_month:02d}-{last_day}"
 
 # Get timestamps
 start_timestamp = to_timestamp(start_date)
@@ -68,10 +68,11 @@ refunds = stripe.Refund.list(
     limit=100
 )
 
-total_eur = 0
-transaction_count = 0
-total_fees = 0
+nb_payments = 0
+nb_refunds = 0
+total_payments = 0
 total_refunds = 0
+total_fees = 0
 
 # Transaction categories
 transactions_in_country = []
@@ -144,7 +145,7 @@ for charge in filtered_charges:
         amount_received = payment["amount_received"] / 100
         currency = payment["currency"].upper()
 
-    total_eur += amount_received
+    total_payments += amount_received
     transaction_count += 1
 
     # Transaction details dictionary
@@ -161,7 +162,7 @@ for charge in filtered_charges:
     }
 
     # Categorize transaction
-    if country == country:
+    if country == arg_country:
         transactions_in_country.append(transaction_details)
     elif country in [
         "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "DE", "GR", "HU",
@@ -190,13 +191,13 @@ for refund in refunds:
     sys.stdout.write(f"\rFetch refund {progress_count}/{total_transactions}...")
     sys.stdout.flush()
  
-    balance_transaction = stripe.BalanceTransaction.retrieve(
-        refund['balance_transaction'])
+    balance_transaction = stripe.BalanceTransaction.retrieve(refund['balance_transaction'])
 
     amount_refunded = balance_transaction['amount'] / 100
     currency = balance_transaction['currency'].upper()
 
     total_refunds += amount_refunded
+    nb_refunds += 1
 
     # Categorize refunds
     refund_details = {
@@ -213,8 +214,8 @@ print("Fetching done!")
 
 # Summary
 print("\nSummary:")
-print(f"Number of transactions: {transaction_count}")
-print(f"Total in EUR: {total_eur:.2f} EUR")
+print(f"Number of payments: {total_payments}")
+print(f"Total: {total_payments:.2f} EUR")
 print(f"Total Stripe fees: {total_fees:.2f} EUR")
 
 # Function to print details for each transaction
@@ -239,7 +240,6 @@ print_transaction_details(transactions_unknown_country, "Unknown transactions")
 
 # Refunds
 
-print(
-    f"\nRefunded transactions: {len(transactions_refunds)} | Total: {total_refunds:.2f} EUR")
+print(f"\nRefunded transactions: {nb_refunds} | Total: {total_refunds:.2f} EUR")
 for i, t in enumerate(transactions_refunds, start=1):
     print(f"  {i}. Amount: {t['amount']:.2f} {t['currency']}")
