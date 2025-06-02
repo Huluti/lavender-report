@@ -12,17 +12,15 @@ load_dotenv()
 # Stripe secret key
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
-# Parse arguments
-
+# Parse arguments
 now = datetime.now()
 current_year = now.year
 last_month = now.month - 1 or 12  # If month is January (1), last month should be December (12)
 
-parser = argparse.ArgumentParser(description="Example program")
+parser = argparse.ArgumentParser(description="Lavender Report")
 parser.add_argument('--country', type=str, help="Country", default="FR")
 parser.add_argument('--year', type=int, help="Year", default=current_year)
 parser.add_argument('--month', type=int, help="Month", default=last_month)
-
 args = parser.parse_args()
 
 arg_country = args.country
@@ -32,7 +30,7 @@ arg_month = args.month
 # Convert dates in timestamps (UTC+1)
 def to_timestamp(date_str):
     tz = pytz.timezone("Europe/Paris")  # UTC+1
-    dt = datetime.strptime(date_str, "%Y-%m-%d")  # Format to AAAA-MM-JJ
+    dt = datetime.strptime(date_str, "%Y-%m-%d")  # Format to YYYY-MM-DD
     dt_utc = tz.localize(dt).astimezone(pytz.utc)  # Convert to UTC
     return int(dt_utc.timestamp())
 
@@ -45,29 +43,16 @@ end_date = f"{arg_year}-{arg_month:02d}-{last_day}"
 start_timestamp = to_timestamp(start_date)
 end_timestamp = to_timestamp(end_date) + 86399  # Very last moment of last day
 
-print(f"Fetch transactions from {start_date} to {end_date}")
+print(f"Fetch balance transactions from {start_date} to {end_date}")
 
-# Fetch payments from given period
-# Fetch more than you need, filter later
-charges = stripe.Charge.list(
-    # go 1 week back
-    created={"gte": start_timestamp - 7 * 24 * 60 * 60},
-    limit=100,
-    expand=['data.customer', 'data.balance_transaction', 'data.payment_intent']
-)
-
-# Filter charges where balance_transaction happened this month
-filtered_charges = [
-    charge for charge in charges.auto_paging_iter()
-    if charge.balance_transaction and start_timestamp <= charge.balance_transaction.created < end_timestamp
-]
-
-# Fetch refunds for given period
-refunds = stripe.Refund.list(
+# Fetch balance transactions from given period
+balance_transactions = stripe.BalanceTransaction.list(
     created={"gte": start_timestamp, "lte": end_timestamp},
-    limit=100
+    limit=100,
+    expand=['data.source']
 )
 
+# Initialize counters
 nb_payments = 0
 nb_refunds = 0
 total_payments = 0
@@ -84,75 +69,114 @@ transactions_refunds = []
 
 # Initialize progress counter
 progress_count = 0
-total_transactions = len(filtered_charges)
+total_transactions = len(list(balance_transactions.auto_paging_iter()))
 
-# Loop over payments
-for charge in filtered_charges:
-    # Update progress
+print(f"Processing {total_transactions} balance transactions...")
+
+# Process balance transactions
+for balance_transaction in balance_transactions.auto_paging_iter():
     progress_count += 1
-    sys.stdout.write(f"\rFetch transaction {progress_count}/{total_transactions}...")
+    sys.stdout.write(f"\rProcessing transaction {progress_count}/{total_transactions}...")
     sys.stdout.flush()
-
-    if not charge.paid:
+    
+    # Skip non-payment transactions (transfers, adjustments, etc.)
+    if balance_transaction.type not in ['charge', 'payment', 'refund']:
         continue
-
-    payment = charge.payment_intent  # Fetch full PaymentIntent details
-
-    customer_email = charge.customer.get("email", "No email")
-
-    # Fetch balance transactions associated to the charge
-    balance_transaction = charge.balance_transaction
-
+    
+    # Convert amounts from cents to full currency units
+    amount = balance_transaction.amount / 100
+    fee = balance_transaction.fee / 100
+    currency = balance_transaction.currency.upper()
+    
+    # Handle refunds separately
+    if balance_transaction.type == 'refund':
+        total_refunds += abs(amount)  # Refunds are negative amounts
+        nb_refunds += 1
+        
+        refund_details = {
+            "amount": abs(amount),
+            "currency": currency,
+            "date": balance_transaction.created
+        }
+        transactions_refunds.append(refund_details)
+        continue
+    
+    # Process charges (payments)
+    nb_payments += 1
+    total_payments += amount
+    total_fees += fee
+    
+    # Initialize default values
     country = 'Unknown'
     vat_number = 'Not available'
     vat_applied = False
-    fee = 0
-    invoice_id = payment.get("invoice")
-    if invoice_id:
-        # Retrieve the Invoice
-        invoice = stripe.Invoice.retrieve(invoice_id)
-
-        # Extract country from the tax rate used
-        tax_amounts = invoice.get("total_tax_amounts", [])
-        for tax in tax_amounts:
-            if not vat_applied and tax.amount > 0:
-                vat_applied = True
-            tax_rate_id = tax.get("tax_rate")
-            if tax_rate_id:
-                # Retrieve the tax rate details
-                tax_rate = stripe.TaxRate.retrieve(tax_rate_id)
-                if tax_rate.country:
-                    country = tax_rate.country
-
-        # Extract VAT number if available
-        customer_tax_ids = invoice.get("customer_tax_ids", [])
-        for tax_id in customer_tax_ids:
-            if tax_id.get("type") == "eu_vat":
-                vat_number = tax_id.get("value")
-                break
-
-    if balance_transaction:
-        # Check if exchange rate exists
-        exchange_rate = balance_transaction.get('exchange_rate', None)
-        # Convert to full currency units
-        amount_received = balance_transaction['amount'] / 100
-        # Stripe fee (convert to full currency units)
-        fee = balance_transaction.get('fee', 0) / 100
-        total_fees += fee  # Accumulate the fees
-        currency = "EUR" if exchange_rate else payment["currency"].upper()
-    else:
-        # Convert to full currency units
-        amount_received = payment["amount_received"] / 100
-        currency = payment["currency"].upper()
-
-    total_payments += amount_received
-    transaction_count += 1
-
+    customer_email = "No email"
+    status = "succeeded"
+    
+    # Get source details (charge, payment_intent, etc.)
+    source = balance_transaction.source
+    if source and hasattr(source, 'object'):
+        try:
+            if source.object == 'charge':
+                # Get customer email from charge
+                if source.customer:
+                    customer = stripe.Customer.retrieve(source.customer)
+                    customer_email = customer.get("email", "No email")
+                
+                # Get payment intent for invoice details via InvoicePayment
+                if source.payment_intent:
+                    payment_intent_id = source.payment_intent
+                    
+                    # Find invoice through InvoicePayment object
+                    try:
+                        # Search for invoice payments linked to this payment intent
+                        invoice_payments = stripe.InvoicePayment.list(
+                            **{
+                                "payment[payment_intent]": payment_intent_id,
+                                "payment[type]": "payment_intent"
+                            },
+                            limit=1
+                        )
+                        
+                        if invoice_payments.data:
+                            invoice_payment = invoice_payments.data[0]
+                            invoice_id = invoice_payment.invoice
+                            
+                            # Retrieve the Invoice
+                            invoice = stripe.Invoice.retrieve(invoice_id)
+                            
+                            # Extract country from the tax rate used
+                            tax_amounts = invoice.get("total_taxes", [])
+                            for tax in tax_amounts:
+                                if not vat_applied and tax.amount > 0:
+                                    vat_applied = True
+                                tax_rate_details = tax.get("tax_rate_details")
+                                if tax_rate_details:
+                                    # Retrieve the tax rate details
+                                    tax_rate = stripe.TaxRate.retrieve(tax_rate_details.tax_rate)
+                                    if tax_rate.country:
+                                        country = tax_rate.country
+                            
+                            # Extract VAT number if available
+                            customer_tax_ids = invoice.get("customer_tax_ids", [])
+                            for tax_id in customer_tax_ids:
+                                if tax_id.get("type") == "eu_vat":
+                                    vat_number = tax_id.get("value")
+                                    break
+                    
+                    except stripe.error.StripeError as e:
+                        # No invoice payment found or error occurred
+                        pass
+            
+        except stripe.error.StripeError as e:
+            print(f"\nError retrieving details for transaction {balance_transaction.id}: {e}")
+            continue
+    
     # Transaction details dictionary
     transaction_details = {
-        "date": payment['created'],
-        "status": payment['status'],
-        "amount": amount_received,
+        "date": balance_transaction.created,
+        "status": status,
+        "amount": amount,
         "currency": currency,
         "email": customer_email,
         "country": country,
@@ -160,7 +184,7 @@ for charge in filtered_charges:
         "vat_applied": vat_applied,
         "fee": fee,
     }
-
+    
     # Categorize transaction
     if country == arg_country:
         transactions_in_country.append(transaction_details)
@@ -178,51 +202,20 @@ for charge in filtered_charges:
     else:
         transactions_outside_eu.append(transaction_details)
 
+# Clear progress indicator
 sys.stdout.write('\r' + ' ' * 50 + '\r')
 sys.stdout.flush()
-
-# Initialize progress counter
-progress_count = 0
-total_transactions = len(refunds)
-
-for refund in refunds:
-    # Update progress
-    progress_count += 1
-    sys.stdout.write(f"\rFetch refund {progress_count}/{total_transactions}...")
-    sys.stdout.flush()
- 
-    balance_transaction = stripe.BalanceTransaction.retrieve(refund['balance_transaction'])
-
-    amount_refunded = balance_transaction['amount'] / 100
-    currency = balance_transaction['currency'].upper()
-
-    total_refunds += amount_refunded
-    nb_refunds += 1
-
-    # Categorize refunds
-    refund_details = {
-        "amount": amount_refunded,
-        "currency": currency,
-    }
-
-    transactions_refunds.append(refund_details)
-
-# Finish progress counter
-sys.stdout.write('\r' + ' ' * 50 + '\r')
-sys.stdout.flush()
-print("Fetching done!")
+print("Processing completed!")
 
 # Summary
 print("\nSummary:")
-print(f"Number of payments: {total_payments}")
+print(f"Number of payments: {nb_payments}")
 print(f"Total: {total_payments:.2f} EUR")
 print(f"Total Stripe fees: {total_fees:.2f} EUR")
 
 # Function to print details for each transaction
-
 def print_transaction_details(transactions, category_name):
-    print(
-        f"\n{category_name}: {len(transactions)} | Total: {sum(t['amount'] for t in transactions):.2f} EUR")
+    print(f"\n{category_name}: {len(transactions)} | Total: {sum(t['amount'] for t in transactions):.2f} EUR")
     for i, t in enumerate(transactions, start=1):
         print(
             f" {i}. Amount: {t['amount']:.2f} {t['currency']} - Date: {datetime.fromtimestamp(t['date'], pytz.utc).strftime('%Y-%m-%d %H:%M:%S')} - "
@@ -231,15 +224,13 @@ def print_transaction_details(transactions, category_name):
         )
 
 # Payments
-
-print_transaction_details(transactions_in_country, "Domestic transactions (your company’s country)")
+print_transaction_details(transactions_in_country, "Domestic transactions (your company's country)")
 print_transaction_details(transactions_in_eu_with_vat, "Intra-EU transactions (with VAT)")
-print_transaction_details(transactions_in_eu_without_vat, "Intra-EU transactions (with reverse-charged VAT")
+print_transaction_details(transactions_in_eu_without_vat, "Intra-EU transactions (with reverse-charged VAT)")
 print_transaction_details(transactions_outside_eu, "Extra-EU transactions")
 print_transaction_details(transactions_unknown_country, "Unknown transactions")
 
 # Refunds
-
 print(f"\nRefunded transactions: {nb_refunds} | Total: {total_refunds:.2f} EUR")
 for i, t in enumerate(transactions_refunds, start=1):
-    print(f"  {i}. Amount: {t['amount']:.2f} {t['currency']}")
+    print(f"  {i}. Amount: {t['amount']:.2f} {t['currency']} - Date: {datetime.fromtimestamp(t['date'], pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}")
