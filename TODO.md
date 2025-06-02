@@ -1,6 +1,5 @@
 # TODO
 
-- add arguments support instead of input params
 - add customizable timezone
 - add cache for Stripe api calls
 - add packaging options (pypi, ...)

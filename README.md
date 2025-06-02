@@ -19,12 +19,16 @@
 
 To generate a report for a specific month, run the following command:
 
-`uv run main.py`
+`uv run main.py [--country COUNTRY] [--year YEAR] [--month MONTH]`
 
-This will ask you the specific month and generate a categorized report for that month with the following sections:
+This will generate a categorized report with the following sections:
 - Domestic
 - Intra-EU
 - Extra-EU
+
+### Example
+
+`uv run main.py --country FR --year 2025 --month 05`
 
 ## Contributing
 

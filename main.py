@@ -5,11 +5,29 @@ import pytz
 import os
 import sys
 import calendar
+import argparse
 
 load_dotenv()
 
 # Stripe secret key
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+
+# Parse arguments
+
+now = datetime.now()
+current_year = now.year
+last_month = now.month - 1 or 12  # If month is January (1), last month should be December (12)
+
+parser = argparse.ArgumentParser(description="Example program")
+parser.add_argument('--country', type=str, help="Country", default="FR")
+parser.add_argument('--year', type=int, help="Year", default=current_year)
+parser.add_argument('--month', type=int, help="Month", default=last_month)
+
+args = parser.parse_args()
+
+country = args.country
+year = args.year
+month = args.month
 
 # Convert dates in timestamps (UTC+1)
 def to_timestamp(date_str):
@@ -17,14 +35,6 @@ def to_timestamp(date_str):
     dt = datetime.strptime(date_str, "%Y-%m-%d")  # Format to AAAA-MM-JJ
     dt_utc = tz.localize(dt).astimezone(pytz.utc)  # Convert to UTC
     return int(dt_utc.timestamp())
-
-
-# Get user infos to start program
-# TODO: switch to command line arguments
-# TODO: add a timezone argument (default to UTC or country's timezone)
-country = input("Enter country (XX): ")
-year = int(input("Enter year (YYYY): "))
-month = int(input("Enter month (MM): "))
 
 # Find first and last day of month
 start_date = f"{year}-{month:02d}-01"
