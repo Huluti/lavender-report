@@ -6,6 +6,7 @@ import os
 import sys
 import calendar
 import argparse
+from decimal import Decimal, ROUND_HALF_UP
 
 load_dotenv()
 
@@ -217,9 +218,11 @@ print(f"Total Stripe fees: {total_fees:.2f} EUR")
 def print_transaction_details(transactions, category_name):
     print(f"\n{category_name}: {len(transactions)} | Total: {sum(t['amount'] for t in transactions):.2f} EUR")
     for i, t in enumerate(transactions, start=1):
+        rounded_amount = int(Decimal(str(t['amount'])).quantize(0, ROUND_HALF_UP))
         print(
             f" {i}. Amount: {t['amount']:.2f} {t['currency']} "
-            f"- Country: {t['country']} - TVA: {t['vat_number']} "
+            f"(Rounded: {rounded_amount} {t['currency']}) "
+            f"- TVA: {t['vat_number']} - Country: {t['country']} "
             f"- Date: {datetime.fromtimestamp(t['date'], pytz.utc).strftime('%Y-%m-%d %H:%M:%S')} "
             f"- Email: {t['email']} - Status: {t['status']} "
             f"- Fees: {t['fee']:.2f} {t['currency']}"
