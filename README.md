@@ -15,6 +15,14 @@
 - Python 3.x
 - uv
 
+## Configuration
+
+Create a `.env` file in the root directory with the following content:
+
+```
+STRIPE_API_KEY=your_stripe_api_key_here
+```
+
 ## Usage
 
 To generate a report for a specific month, run the following command:
