@@ -78,21 +78,21 @@ for balance_transaction in balance_transactions.auto_paging_iter():
     progress_count += 1
     sys.stdout.write(f"\rProcessing transaction {progress_count}/{total_transactions}...")
     sys.stdout.flush()
-    
+
     # Skip non-payment transactions (transfers, adjustments, etc.)
     if balance_transaction.type not in ['charge', 'payment', 'refund']:
         continue
-    
+
     # Convert amounts from cents to full currency units
     amount = balance_transaction.amount / 100
     fee = balance_transaction.fee / 100
     currency = balance_transaction.currency.upper()
-    
+
     # Handle refunds separately
     if balance_transaction.type == 'refund':
         total_refunds += abs(amount)  # Refunds are negative amounts
         nb_refunds += 1
-        
+
         refund_details = {
             "amount": abs(amount),
             "currency": currency,
@@ -100,19 +100,19 @@ for balance_transaction in balance_transactions.auto_paging_iter():
         }
         transactions_refunds.append(refund_details)
         continue
-    
+
     # Process charges (payments)
     nb_payments += 1
     total_payments += amount
     total_fees += fee
-    
+
     # Initialize default values
     country = 'Unknown'
     vat_number = 'Not available'
     vat_applied = False
     customer_email = "No email"
     status = "succeeded"
-    
+
     # Get source details (charge, payment_intent, etc.)
     source = balance_transaction.source
     if source and hasattr(source, 'object'):
@@ -122,11 +122,11 @@ for balance_transaction in balance_transactions.auto_paging_iter():
                 if source.customer:
                     customer = stripe.Customer.retrieve(source.customer)
                     customer_email = customer.get("email", "No email")
-                
+
                 # Get payment intent for invoice details via InvoicePayment
                 if source.payment_intent:
                     payment_intent_id = source.payment_intent
-                    
+
                     # Find invoice through InvoicePayment object
                     try:
                         # Search for invoice payments linked to this payment intent
@@ -137,14 +137,14 @@ for balance_transaction in balance_transactions.auto_paging_iter():
                             },
                             limit=1
                         )
-                        
+
                         if invoice_payments.data:
                             invoice_payment = invoice_payments.data[0]
                             invoice_id = invoice_payment.invoice
-                            
+
                             # Retrieve the Invoice
                             invoice = stripe.Invoice.retrieve(invoice_id)
-                            
+
                             # Extract country from the tax rate used
                             tax_amounts = invoice.get("total_taxes", [])
                             for tax in tax_amounts:
@@ -156,22 +156,22 @@ for balance_transaction in balance_transactions.auto_paging_iter():
                                     tax_rate = stripe.TaxRate.retrieve(tax_rate_details.tax_rate)
                                     if tax_rate.country:
                                         country = tax_rate.country
-                            
+
                             # Extract VAT number if available
                             customer_tax_ids = invoice.get("customer_tax_ids", [])
                             for tax_id in customer_tax_ids:
                                 if tax_id.get("type") == "eu_vat":
                                     vat_number = tax_id.get("value")
                                     break
-                    
+
                     except stripe.error.StripeError as e:
                         # No invoice payment found or error occurred
                         pass
-            
+
         except stripe.error.StripeError as e:
             print(f"\nError retrieving details for transaction {balance_transaction.id}: {e}")
             continue
-    
+
     # Transaction details dictionary
     transaction_details = {
         "date": balance_transaction.created,
@@ -184,7 +184,7 @@ for balance_transaction in balance_transactions.auto_paging_iter():
         "vat_applied": vat_applied,
         "fee": fee,
     }
-    
+
     # Categorize transaction
     if country == arg_country:
         transactions_in_country.append(transaction_details)
@@ -218,9 +218,11 @@ def print_transaction_details(transactions, category_name):
     print(f"\n{category_name}: {len(transactions)} | Total: {sum(t['amount'] for t in transactions):.2f} EUR")
     for i, t in enumerate(transactions, start=1):
         print(
-            f" {i}. Amount: {t['amount']:.2f} {t['currency']} - Date: {datetime.fromtimestamp(t['date'], pytz.utc).strftime('%Y-%m-%d %H:%M:%S')} - "
-            f"Email: {t['email']} - Status: {t['status']} - "
-            f"Country: {t['country']} - TVA: {t['vat_number']} - Fees: {t['fee']:.2f} {t['currency']}"
+            f" {i}. Amount: {t['amount']:.2f} {t['currency']} "
+            f"- Country: {t['country']} - TVA: {t['vat_number']} "
+            f"- Date: {datetime.fromtimestamp(t['date'], pytz.utc).strftime('%Y-%m-%d %H:%M:%S')} "
+            f"- Email: {t['email']} - Status: {t['status']} "
+            f"- Fees: {t['fee']:.2f} {t['currency']}"
         )
 
 # Payments
