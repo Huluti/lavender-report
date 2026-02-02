@@ -12,6 +12,9 @@ load_dotenv()
 
 # Stripe secret key
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+if stripe.api_key is None:
+    print("Error: STRIPE_SECRET_KEY environment variable not set.", file=sys.stderr)
+    sys.exit(1)
 
 # Parse arguments
 now = datetime.now()
