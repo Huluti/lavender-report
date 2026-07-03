@@ -6,5 +6,4 @@
 - better documentation
 - improve separation of file
 - improve report formatting
-- export options (csv, html, ...)
 - support more edge-cases
