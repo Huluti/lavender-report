@@ -125,7 +125,7 @@ for balance_transaction in balance_transactions.auto_paging_iter():
                 # Get customer email from charge
                 if source.customer:
                     customer = stripe.Customer.retrieve(source.customer)
-                    customer_email = customer.get("email", "No email")
+                    customer_email = customer.email or "No email"
 
                 # Get payment intent for invoice details via InvoicePayment
                 if source.payment_intent:
@@ -150,11 +150,11 @@ for balance_transaction in balance_transactions.auto_paging_iter():
                             invoice = stripe.Invoice.retrieve(invoice_id)
 
                             # Extract country from the tax rate used
-                            tax_amounts = invoice.get("total_taxes", [])
+                            tax_amounts = invoice.total_taxes or []
                             for tax in tax_amounts:
                                 if not vat_applied and tax.amount > 0:
                                     vat_applied = True
-                                tax_rate_details = tax.get("tax_rate_details")
+                                tax_rate_details = tax.tax_rate_details
                                 if tax_rate_details:
                                     # Retrieve the tax rate details
                                     tax_rate = stripe.TaxRate.retrieve(tax_rate_details.tax_rate)
@@ -162,10 +162,10 @@ for balance_transaction in balance_transactions.auto_paging_iter():
                                         country = tax_rate.country
 
                             # Extract VAT number if available
-                            customer_tax_ids = invoice.get("customer_tax_ids", [])
+                            customer_tax_ids = invoice.customer_tax_ids or []
                             for tax_id in customer_tax_ids:
-                                if tax_id.get("type") == "eu_vat":
-                                    vat_number = tax_id.get("value")
+                                if tax_id.type == "eu_vat":
+                                    vat_number = tax_id.value
                                     break
 
                     except stripe.error.StripeError as e:
