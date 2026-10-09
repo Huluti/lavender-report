@@ -649,9 +649,13 @@ def format_date(timestamp):
 
 # Export functionality
 if export_format:
+    # Generation timestamp (Europe/Paris, like the report window): shown
+    # in the HTML header and used in the default filename, so the two
+    # always match
+    generated_at = datetime.now(pytz.timezone("Europe/Paris"))
     if not output_filename:
         # Generate default filename
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        timestamp = generated_at.strftime('%Y%m%d_%H%M%S')
         if export_format == 'csv':
             output_filename = f'lavender_report_{start_date.replace("-", "")}_to_{end_date.replace("-", "")}_{timestamp}.csv'
         else:  # html
@@ -675,7 +679,8 @@ if export_format:
             transactions_in_country, transactions_in_eu_with_vat, transactions_in_eu_without_vat,
             transactions_outside_eu, transactions_unknown_country, transactions_refunds,
             arg_country, start_date, end_date, arg_currency, format_amount, format_date, ht_amount,
-            convert, currency_stats, rates, set(fx_overrides)
+            convert, currency_stats, rates, set(fx_overrides),
+            generated_at.strftime('%Y-%m-%d %H:%M:%S')
         )
         with open(output_filename, 'w', encoding='utf-8') as htmlfile:
             htmlfile.write(html_content)

@@ -229,7 +229,7 @@ def generate_html_report(
     transactions_in_country, transactions_in_eu_with_vat, transactions_in_eu_without_vat,
     transactions_outside_eu, transactions_unknown_country, transactions_refunds,
     arg_country, start_date, end_date, arg_currency, format_amount, format_date, ht_amount,
-    convert, currency_stats, rates, manual_rates
+    convert, currency_stats, rates, manual_rates, generated_at
 ):
     """Generate HTML report of all transactions, one tab per currency
     plus an overview tab with the whole situation."""
@@ -611,7 +611,7 @@ def generate_html_report(
 </head>
 <body>
     <h1>Lavender Report</h1>
-    <p><strong>Period:</strong> {start_date} to {end_date} | <strong>Default currency:</strong> {arg_currency}</p>
+    <p><strong>Period:</strong> {start_date} to {end_date} | <strong>Default currency:</strong> {arg_currency} | <strong>Generated:</strong> {generated_at} (Europe/Paris)</p>
 
     <div class="tab-bar">{tab_buttons}
     </div>
