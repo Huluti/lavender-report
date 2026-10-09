@@ -76,6 +76,25 @@ def save_charge_details_cache(cache):
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump({"version": CACHE_VERSION, "charges": cache}, f)
 
+
+def country_flag(country):
+    """Flag emoji for an ISO country code, empty string otherwise."""
+    if len(country) == 2 and country.isalpha() and country.isupper():
+        return chr(0x1F1E6 + ord(country[0]) - ord('A')) + chr(0x1F1E6 + ord(country[1]) - ord('A'))
+    return ""
+
+
+CURRENCY_SYMBOLS = {"EUR": "€", "USD": "$", "GBP": "£"}
+
+
+def format_amount(value, currency):
+    """Format a money amount for display according to --locale."""
+    if arg_locale == 'fr':
+        symbol = CURRENCY_SYMBOLS.get(currency, currency)
+        text = f"{value:,.2f}".replace(",", "\u00a0").replace(".", ",")
+        return f"{text} {symbol}"
+    return f"{value:.2f} {currency}"
+
 # Convert dates in timestamps (UTC+1)
 def to_timestamp(date_str):
     tz = pytz.timezone("Europe/Paris")  # UTC+1
@@ -458,25 +477,6 @@ def print_transaction_details(transactions, category_name):
 def format_date(timestamp):
     """Format timestamp to readable date string."""
     return datetime.fromtimestamp(timestamp, pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
-
-
-def country_flag(country):
-    """Flag emoji for an ISO country code, empty string otherwise."""
-    if len(country) == 2 and country.isalpha() and country.isupper():
-        return chr(0x1F1E6 + ord(country[0]) - ord('A')) + chr(0x1F1E6 + ord(country[1]) - ord('A'))
-    return ""
-
-
-CURRENCY_SYMBOLS = {"EUR": "€", "USD": "$", "GBP": "£"}
-
-
-def format_amount(value, currency):
-    """Format a money amount for display according to --locale."""
-    if arg_locale == 'fr':
-        symbol = CURRENCY_SYMBOLS.get(currency, currency)
-        text = f"{value:,.2f}".replace(",", "\u00a0").replace(".", ",")
-        return f"{text} {symbol}"
-    return f"{value:.2f} {currency}"
 
 
 def generate_category_section(transactions, title):
