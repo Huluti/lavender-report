@@ -1031,9 +1031,12 @@ def generate_html_report(
     </div>
 '''
     
-    # Add domestic transactions
+    # Add domestic transactions, split consumers / businesses
     html_content += generate_category_section(
-        transactions_in_country, f"Domestic transactions ({arg_country})"
+        [t for t in transactions_in_country if not t['b2b']], f"Domestic B2C ({arg_country})"
+    )
+    html_content += generate_category_section(
+        [t for t in transactions_in_country if t['b2b']], f"Domestic B2B ({arg_country})"
     )
     
     # Add EU with VAT transactions
@@ -1133,7 +1136,8 @@ if export_format:
 
 
 # Payments
-print_transaction_details(transactions_in_country, "Domestic transactions (your company's country)")
+print_transaction_details([t for t in transactions_in_country if not t['b2b']], "Domestic B2C transactions (your company's country)")
+print_transaction_details([t for t in transactions_in_country if t['b2b']], "Domestic B2B transactions (your company's country)")
 print_transaction_details(transactions_in_eu_with_vat, "Intra-EU transactions (with VAT)")
 print_transaction_details(transactions_in_eu_without_vat, "Intra-EU transactions (with reverse-charged VAT)")
 print_transaction_details(transactions_outside_eu, "Extra-EU transactions")
