@@ -185,6 +185,46 @@ def _currency_activity_cards(currency, stats, arg_currency, format_amount, show_
     return cards
 
 
+def _warnings_box(warned, format_date, format_amount):
+    """Warnings box for a set of transactions, empty when none."""
+    if not warned:
+        return ""
+    box = f'''
+    <div class="category-section" style="background-color: #fff3cd; padding: 15px; border-radius: 8px;">
+        <div class="category-title" style="color: #856404;">
+            Warnings ({len(warned)}) - possible classification mismatches, review before declaring
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Amount</th>
+                    <th>Country</th>
+                    <th>VAT Number</th>
+                    <th>Email</th>
+                    <th>Warning</th>
+                </tr>
+            </thead>
+            <tbody>
+'''
+    for t in warned:
+        box += f'''
+                <tr>
+                    <td>{format_date(t['date'])}</td>
+                    <td>{format_amount(t['amount'], t['currency'])}</td>
+                    <td>{country_flag(t['country'])} {t['country']}</td>
+                    <td>{html.escape(t['vat_number'])}</td>
+                    <td>{html.escape(t['email'])}</td>
+                    <td>{html.escape('; '.join(t['warnings']))}</td>
+                </tr>
+'''
+    box += '''            </tbody>
+        </table>
+    </div>
+'''
+    return box
+
+
 def generate_html_report(
     transactions_in_country, transactions_in_eu_with_vat, transactions_in_eu_without_vat,
     transactions_outside_eu, transactions_unknown_country, transactions_refunds,
@@ -287,6 +327,7 @@ def generate_html_report(
         overview_groups += _group(f"French VAT declaration (converted to {arg_currency})", french_cards)
 
     # --- Per-currency tabs ---
+    warned_all = [t for t in all_categorized if t["warnings"]]
     tab_buttons = '''
         <button class="tab-link active" onclick="openTab(event, 'tab-overview')">Overview</button>'''
     tab_contents = f'''
@@ -294,6 +335,7 @@ def generate_html_report(
     <div class="summary">
         <h2>Summary - whole situation</h2>{overview_groups}
     </div>
+    {_warnings_box(warned_all, format_date, format_amount)}
     </div>'''
 
     for currency in currencies:
@@ -423,46 +465,9 @@ def generate_html_report(
     <div class="summary">
         <h2>Summary - {currency}</h2>{currency_groups}
     </div>
+    {_warnings_box([t for t in warned_all if t['currency'] == currency], format_date, format_amount)}
 {tables}{refunds_table}
     </div>'''
-
-    # Classification warnings box (all currencies)
-    warnings_box = ""
-    warned = [t for t in all_categorized if t["warnings"]]
-    if warned:
-        warnings_box = f'''
-    <div class="category-section" style="background-color: #fff3cd; padding: 15px; border-radius: 8px;">
-        <div class="category-title" style="color: #856404;">
-            Warnings ({len(warned)}) - possible classification mismatches, review before declaring
-        </div>
-        <table>
-            <thead>
-                <tr>
-                    <th>Date</th>
-                    <th>Amount</th>
-                    <th>Country</th>
-                    <th>VAT Number</th>
-                    <th>Email</th>
-                    <th>Warning</th>
-                </tr>
-            </thead>
-            <tbody>
-'''
-        for t in warned:
-            warnings_box += f'''
-                <tr>
-                    <td>{format_date(t['date'])}</td>
-                    <td>{format_amount(t['amount'], t['currency'])}</td>
-                    <td>{country_flag(t['country'])} {t['country']}</td>
-                    <td>{html.escape(t['vat_number'])}</td>
-                    <td>{html.escape(t['email'])}</td>
-                    <td>{html.escape('; '.join(t['warnings']))}</td>
-                </tr>
-'''
-        warnings_box += '''            </tbody>
-        </table>
-    </div>
-'''
 
     html_content = f'''<!DOCTYPE html>
 <html lang="en">
@@ -610,7 +615,6 @@ def generate_html_report(
 
     <div class="tab-bar">{tab_buttons}
     </div>
-{warnings_box}
 {tab_contents}
     <script>
         function openTab(evt, tabId) {{
