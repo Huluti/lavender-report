@@ -5,3 +5,4 @@ debug_*
 .cache/
 *.csv
 *.html
+.ruff_cache/

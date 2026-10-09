@@ -112,6 +112,8 @@ The tool supports exporting reports in two formats:
 
 We welcome contributions! If you would like to improve **LavenderReport**, feel free to fork the project and submit a pull request.
 
+The codebase is linted with [ruff](https://docs.astral.sh/ruff/); run `uv run ruff check .` before submitting.
+
 ## License
 
 This project is licensed under the GNU GPL v3 License - see the [LICENSE](LICENSE) file for details.

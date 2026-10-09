@@ -1,15 +1,17 @@
-from datetime import datetime
-from dotenv import load_dotenv
-import stripe
-import pytz
-import os
-import sys
-import calendar
 import argparse
+import calendar
 import csv
 import json
+import os
 import re
-from decimal import Decimal, ROUND_HALF_UP
+import sys
+from datetime import datetime
+from decimal import ROUND_HALF_UP, Decimal
+
+import pytz
+import stripe
+from dotenv import load_dotenv
+
 from report_csv import generate_csv_report
 from report_html import generate_html_report
 
@@ -475,7 +477,7 @@ if args.debug:
             addon_lines = ", ".join(f"{cur}={addon_fees_by_currency[cur]:.2f}" for cur in sorted(addon_fees_by_currency))
             debugfile.write(f"  Add-on fees per currency: {addon_lines}\n")
         debugfile.write(f"  Skipped: {len(skipped)} | amount={skipped_amount:.2f} | fee={skipped_fee:.2f}\n")
-        debugfile.write(f"  Skipped transactions detail:\n")
+        debugfile.write("  Skipped transactions detail:\n")
         for t in skipped:
             debugfile.write(
                 f"    {t['id']} | type: {t['type']} | category: {t['reporting_category']} | "

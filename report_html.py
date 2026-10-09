@@ -1,7 +1,7 @@
 """HTML report generation for Lavender Report."""
 
 import html
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 
 
 def country_flag(country):
