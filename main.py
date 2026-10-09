@@ -33,12 +33,14 @@ parser.add_argument('--export', type=str, choices=['csv', 'html'], help="Export 
 parser.add_argument('--output', type=str, help="Output filename for export")
 parser.add_argument('--debug', action='store_true', help="Log balance transactions skipped by the type filter")
 parser.add_argument('--currency', type=str, help="Report currency (default: EUR). Transactions in other currencies are listed separately", default="EUR")
+parser.add_argument('--locale', type=str, choices=['en', 'fr'], help="Number formatting for display (en: 3571.65 EUR, fr: 3 571,65 EUR with euro sign)", default="en")
 args = parser.parse_args()
 
 arg_country = args.country
 arg_year = args.year
 arg_month = args.month
 arg_currency = args.currency.upper()
+arg_locale = args.locale
 export_format = args.export
 output_filename = args.output
 
@@ -410,11 +412,11 @@ if args.debug:
 # Summary
 print("\nSummary:")
 print(f"Number of payments: {nb_payments}")
-print(f"Total: {total_payments:.2f} {arg_currency}")
-print(f"Total Stripe fees: {total_fees:.2f} {arg_currency}")
+print(f"Total: {format_amount(total_payments, arg_currency)}")
+print(f"Total Stripe fees: {format_amount(total_fees, arg_currency)}")
 if addon_fees:
-    print(f"Add-on Stripe fees (Billing, Automatic Tax, Radar, Sigma...): {addon_fees:.2f} {arg_currency}")
-    print(f"Total Stripe fees incl. add-ons: {total_fees - addon_fees:.2f} {arg_currency}")
+    print(f"Add-on Stripe fees (Billing, Automatic Tax, Radar, Sigma...): {format_amount(addon_fees, arg_currency)}")
+    print(f"Total Stripe fees incl. add-ons: {format_amount(total_fees - addon_fees, arg_currency)}")
 
 if other_currency_transactions:
     print("\nTransactions in other currencies (excluded from the totals above):")
@@ -422,7 +424,7 @@ if other_currency_transactions:
         cur_txns = [t for t in other_currency_transactions if t['currency'] == cur]
         cur_amount = sum(t['amount'] for t in cur_txns)
         cur_fee = sum(t['fee'] for t in cur_txns)
-        print(f"  {cur}: {len(cur_txns)} transactions | Amount: {cur_amount:.2f} {cur} | Fees: {cur_fee:.2f} {cur}")
+        print(f"  {cur}: {len(cur_txns)} transactions | Amount: {format_amount(cur_amount, cur)} | Fees: {format_amount(cur_fee, cur)}")
 
 # Classification warnings: possible mismatches to review before declaring
 all_categorized_transactions = (
@@ -435,21 +437,21 @@ if warned_transactions:
     for t in warned_transactions:
         print(
             f"  {datetime.fromtimestamp(t['date'], pytz.utc).strftime('%Y-%m-%d %H:%M:%S')} | "
-            f"{t['amount']:.2f} {t['currency']} | {t['country']} | {t['email']} | {'; '.join(t['warnings'])}"
+            f"{format_amount(t['amount'], t['currency'])} | {t['country']} | {t['email']} | {'; '.join(t['warnings'])}"
         )
 
 # Function to print details for each transaction
 def print_transaction_details(transactions, category_name):
-    print(f"\n{category_name}: {len(transactions)} | Total: {sum(t['amount'] for t in transactions):.2f} EUR")
+    print(f"\n{category_name}: {len(transactions)} | Total: {format_amount(sum(t['amount'] for t in transactions), arg_currency)}")
     for i, t in enumerate(transactions, start=1):
         rounded_amount = int(Decimal(str(t['amount'])).quantize(0, ROUND_HALF_UP))
         print(
-            f" {i}. Amount: {t['amount']:.2f} {t['currency']} "
-            f"(Rounded: {rounded_amount} {t['currency']}) "
+            f" {i}. Amount: {format_amount(t['amount'], t['currency'])} "
+            f"(Rounded: {format_amount(rounded_amount, t['currency'])}) "
             f"- TVA: {t['vat_number']} - Country: {t['country']} "
             f"- Date: {datetime.fromtimestamp(t['date'], pytz.utc).strftime('%Y-%m-%d %H:%M:%S')} "
             f"- Email: {t['email']} - Status: {t['status']} "
-            f"- Fees: {t['fee']:.2f} {t['currency']}"
+            f"- Fees: {format_amount(t['fee'], t['currency'])}"
         )
 
 
@@ -463,6 +465,68 @@ def country_flag(country):
     if len(country) == 2 and country.isalpha() and country.isupper():
         return chr(0x1F1E6 + ord(country[0]) - ord('A')) + chr(0x1F1E6 + ord(country[1]) - ord('A'))
     return ""
+
+
+CURRENCY_SYMBOLS = {"EUR": "€", "USD": "$", "GBP": "£"}
+
+
+def format_amount(value, currency):
+    """Format a money amount for display according to --locale."""
+    if arg_locale == 'fr':
+        symbol = CURRENCY_SYMBOLS.get(currency, currency)
+        text = f"{value:,.2f}".replace(",", "\u00a0").replace(".", ",")
+        return f"{text} {symbol}"
+    return f"{value:.2f} {currency}"
+
+
+def generate_category_section(transactions, title):
+    """Generate the HTML section for one category of transactions."""
+    if not transactions:
+        return ""
+    total = sum(t['amount'] for t in transactions)
+    rows = ""
+    for i, t in enumerate(transactions, start=1):
+        rounded_amount = int(Decimal(str(t['amount'])).quantize(0, ROUND_HALF_UP))
+        vat_badge = "Yes" if t['vat_applied'] else "No"
+        rows += f'''
+                <tr>
+                    <td>{i}</td>
+                    <td>{format_date(t['date'])}</td>
+                    <td class="amount-positive">{format_amount(t['amount'], t['currency'])}</td>
+                    <td>{format_amount(rounded_amount, t['currency'])}</td>
+                    <td>{country_flag(t['country'])} {t['country']}</td>
+                    <td>{html.escape(t['vat_number'])}</td>
+                    <td>{vat_badge}</td>
+                    <td>{html.escape(t['email'])}</td>
+                    <td>{t['status']}</td>
+                    <td>{format_amount(t['fee'], t['currency'])}</td>
+                </tr>
+'''
+    return f'''
+    <div class="category-section">
+        <div class="category-title">
+            {title} - {len(transactions)} transactions | Total: {format_amount(total, arg_currency)}
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Date</th>
+                    <th>Amount</th>
+                    <th>Rounded</th>
+                    <th>Country</th>
+                    <th>VAT Number</th>
+                    <th>VAT Applied</th>
+                    <th>Email</th>
+                    <th>Status</th>
+                    <th>Fees</th>
+                </tr>
+            </thead>
+            <tbody>{rows}
+            </tbody>
+        </table>
+    </div>
+'''
 
 
 def generate_csv_report(
@@ -769,19 +833,19 @@ def generate_html_report(
             </div>
             <div class="summary-item">
                 <strong>Total Payments</strong>
-                <span class="summary-value">{total_payments:.2f} EUR</span>
+                <span class="summary-value">{format_amount(total_payments, arg_currency)}</span>
             </div>
             <div class="summary-item">
                 <strong>Total Stripe Fees</strong>
-                <span class="summary-value">{total_fees:.2f} EUR</span>
+                <span class="summary-value">{format_amount(total_fees, arg_currency)}</span>
             </div>
             <div class="summary-item">
                 <strong>Add-on Stripe Fees</strong>
-                <span class="summary-value">{addon_fees:.2f} EUR</span>
+                <span class="summary-value">{format_amount(addon_fees, arg_currency)}</span>
             </div>
             <div class="summary-item">
                 <strong>Total Stripe Fees incl. add-ons</strong>
-                <span class="summary-value">{total_fees - addon_fees:.2f} EUR</span>
+                <span class="summary-value">{format_amount(total_fees - addon_fees, arg_currency)}</span>
             </div>
             <div class="summary-item">
                 <strong>Number of Refunds</strong>
@@ -789,11 +853,11 @@ def generate_html_report(
             </div>
             <div class="summary-item">
                 <strong>Total Refunds</strong>
-                <span class="summary-value">{total_refunds:.2f} EUR</span>
+                <span class="summary-value">{format_amount(total_refunds, arg_currency)}</span>
             </div>
             <div class="summary-item">
                 <strong>Net Total</strong>
-                <span class="summary-value">{total_payments - total_refunds:.2f} EUR</span>
+                <span class="summary-value">{format_amount(total_payments - total_refunds, arg_currency)}</span>
             </div>
         </div>
     </div>
@@ -827,7 +891,7 @@ def generate_html_report(
             html_content += f'''
                 <tr>
                     <td>{format_date(t['date'])}</td>
-                    <td>{t['amount']:.2f} {t['currency']}</td>
+                    <td>{format_amount(t['amount'], t['currency'])}</td>
                     <td>{country_flag(t['country'])} {t['country']}</td>
                     <td>{html.escape(t['vat_number'])}</td>
                     <td>{html.escape(t['email'])}</td>
@@ -840,227 +904,29 @@ def generate_html_report(
 '''
     
     # Add domestic transactions
-    domestic_total = sum(t['amount'] for t in transactions_in_country)
-    if transactions_in_country:
-        html_content += f'''
-    <div class="category-section">
-        <div class="category-title">
-            Domestic transactions ({arg_country}) - {len(transactions_in_country)} transactions | Total: {domestic_total:.2f} EUR
-        </div>
-        <table>
-            <thead>
-                <tr>
-                    <th>#</th>
-                    <th>Date</th>
-                    <th>Amount</th>
-                    <th>Rounded</th>
-                    <th>Country</th>
-                    <th>VAT Number</th>
-                    <th>VAT Applied</th>
-                    <th>Email</th>
-                    <th>Status</th>
-                    <th>Fees</th>
-                </tr>
-            </thead>
-            <tbody>
-'''
-        for i, t in enumerate(transactions_in_country, start=1):
-            rounded_amount = int(Decimal(str(t['amount'])).quantize(0, ROUND_HALF_UP))
-            vat_badge = "Yes" if t['vat_applied'] else "No"
-            html_content += f'''
-                <tr>
-                    <td>{i}</td>
-                    <td>{format_date(t['date'])}</td>
-                    <td class="amount-positive">{t['amount']:.2f} {t['currency']}</td>
-                    <td>{rounded_amount} {t['currency']}</td>
-                    <td>{country_flag(t['country'])} {t['country']}</td>
-                    <td>{html.escape(t['vat_number'])}</td>
-                    <td>{vat_badge}</td>
-                    <td>{html.escape(t['email'])}</td>
-                    <td>{t['status']}</td>
-                    <td>{t['fee']:.2f} {t['currency']}</td>
-                </tr>
-'''
-        html_content += '''            </tbody>
-        </table>
-    </div>
-'''
+    html_content += generate_category_section(
+        transactions_in_country, f"Domestic transactions ({arg_country})"
+    )
     
     # Add EU with VAT transactions
-    eu_vat_total = sum(t['amount'] for t in transactions_in_eu_with_vat)
-    if transactions_in_eu_with_vat:
-        html_content += f'''
-    <div class="category-section">
-        <div class="category-title">
-            Intra-EU transactions (with VAT) - {len(transactions_in_eu_with_vat)} transactions | Total: {eu_vat_total:.2f} EUR
-        </div>
-        <table>
-            <thead>
-                <tr>
-                    <th>#</th>
-                    <th>Date</th>
-                    <th>Amount</th>
-                    <th>Rounded</th>
-                    <th>Country</th>
-                    <th>VAT Number</th>
-                    <th>Email</th>
-                    <th>Status</th>
-                    <th>Fees</th>
-                </tr>
-            </thead>
-            <tbody>
-'''
-        for i, t in enumerate(transactions_in_eu_with_vat, start=1):
-            rounded_amount = int(Decimal(str(t['amount'])).quantize(0, ROUND_HALF_UP))
-            html_content += f'''
-                <tr>
-                    <td>{i}</td>
-                    <td>{format_date(t['date'])}</td>
-                    <td class="amount-positive">{t['amount']:.2f} {t['currency']}</td>
-                    <td>{rounded_amount} {t['currency']}</td>
-                    <td>{country_flag(t['country'])} {t['country']}</td>
-                    <td>{html.escape(t['vat_number'])}</td>
-                    <td>{html.escape(t['email'])}</td>
-                    <td>{t['status']}</td>
-                    <td>{t['fee']:.2f} {t['currency']}</td>
-                </tr>
-'''
-        html_content += '''            </tbody>
-        </table>
-    </div>
-'''
+    html_content += generate_category_section(
+        transactions_in_eu_with_vat, "Intra-EU transactions (with VAT)"
+    )
     
     # Add EU without VAT transactions
-    eu_no_vat_total = sum(t['amount'] for t in transactions_in_eu_without_vat)
-    if transactions_in_eu_without_vat:
-        html_content += f'''
-    <div class="category-section">
-        <div class="category-title">
-            Intra-EU transactions (reverse-charged VAT) - {len(transactions_in_eu_without_vat)} transactions | Total: {eu_no_vat_total:.2f} EUR
-        </div>
-        <table>
-            <thead>
-                <tr>
-                    <th>#</th>
-                    <th>Date</th>
-                    <th>Amount</th>
-                    <th>Rounded</th>
-                    <th>Country</th>
-                    <th>VAT Number</th>
-                    <th>Email</th>
-                    <th>Status</th>
-                    <th>Fees</th>
-                </tr>
-            </thead>
-            <tbody>
-'''
-        for i, t in enumerate(transactions_in_eu_without_vat, start=1):
-            rounded_amount = int(Decimal(str(t['amount'])).quantize(0, ROUND_HALF_UP))
-            html_content += f'''
-                <tr>
-                    <td>{i}</td>
-                    <td>{format_date(t['date'])}</td>
-                    <td class="amount-positive">{t['amount']:.2f} {t['currency']}</td>
-                    <td>{rounded_amount} {t['currency']}</td>
-                    <td>{country_flag(t['country'])} {t['country']}</td>
-                    <td>{html.escape(t['vat_number'])}</td>
-                    <td>{html.escape(t['email'])}</td>
-                    <td>{t['status']}</td>
-                    <td>{t['fee']:.2f} {t['currency']}</td>
-                </tr>
-'''
-        html_content += '''            </tbody>
-        </table>
-    </div>
-'''
+    html_content += generate_category_section(
+        transactions_in_eu_without_vat, "Intra-EU transactions (reverse-charged VAT)"
+    )
     
     # Add extra-EU transactions
-    extra_eu_total = sum(t['amount'] for t in transactions_outside_eu)
-    if transactions_outside_eu:
-        html_content += f'''
-    <div class="category-section">
-        <div class="category-title">
-            Extra-EU transactions - {len(transactions_outside_eu)} transactions | Total: {extra_eu_total:.2f} EUR
-        </div>
-        <table>
-            <thead>
-                <tr>
-                    <th>#</th>
-                    <th>Date</th>
-                    <th>Amount</th>
-                    <th>Rounded</th>
-                    <th>Country</th>
-                    <th>VAT Number</th>
-                    <th>Email</th>
-                    <th>Status</th>
-                    <th>Fees</th>
-                </tr>
-            </thead>
-            <tbody>
-'''
-        for i, t in enumerate(transactions_outside_eu, start=1):
-            rounded_amount = int(Decimal(str(t['amount'])).quantize(0, ROUND_HALF_UP))
-            html_content += f'''
-                <tr>
-                    <td>{i}</td>
-                    <td>{format_date(t['date'])}</td>
-                    <td class="amount-positive">{t['amount']:.2f} {t['currency']}</td>
-                    <td>{rounded_amount} {t['currency']}</td>
-                    <td>{country_flag(t['country'])} {t['country']}</td>
-                    <td>{html.escape(t['vat_number'])}</td>
-                    <td>{html.escape(t['email'])}</td>
-                    <td>{t['status']}</td>
-                    <td>{t['fee']:.2f} {t['currency']}</td>
-                </tr>
-'''
-        html_content += '''            </tbody>
-        </table>
-    </div>
-'''
+    html_content += generate_category_section(
+        transactions_outside_eu, "Extra-EU transactions"
+    )
     
     # Add unknown country transactions
-    unknown_total = sum(t['amount'] for t in transactions_unknown_country)
-    if transactions_unknown_country:
-        html_content += f'''
-    <div class="category-section">
-        <div class="category-title">
-            Unknown transactions - {len(transactions_unknown_country)} transactions | Total: {unknown_total:.2f} EUR
-        </div>
-        <table>
-            <thead>
-                <tr>
-                    <th>#</th>
-                    <th>Date</th>
-                    <th>Amount</th>
-                    <th>Rounded</th>
-                    <th>Country</th>
-                    <th>VAT Number</th>
-                    <th>Email</th>
-                    <th>Status</th>
-                    <th>Fees</th>
-                </tr>
-            </thead>
-            <tbody>
-'''
-        for i, t in enumerate(transactions_unknown_country, start=1):
-            rounded_amount = int(Decimal(str(t['amount'])).quantize(0, ROUND_HALF_UP))
-            html_content += f'''
-                <tr>
-                    <td>{i}</td>
-                    <td>{format_date(t['date'])}</td>
-                    <td class="amount-positive">{t['amount']:.2f} {t['currency']}</td>
-                    <td>{rounded_amount} {t['currency']}</td>
-                    <td>{country_flag(t['country'])} {t['country']}</td>
-                    <td>{html.escape(t['vat_number'])}</td>
-                    <td>{html.escape(t['email'])}</td>
-                    <td>{t['status']}</td>
-                    <td>{t['fee']:.2f} {t['currency']}</td>
-                </tr>
-'''
-        html_content += '''            </tbody>
-        </table>
-    </div>
-'''
+    html_content += generate_category_section(
+        transactions_unknown_country, "Unknown transactions"
+    )
     
     # Add refunds
     if transactions_refunds:
@@ -1085,7 +951,7 @@ def generate_html_report(
                 <tr>
                     <td>{i}</td>
                     <td>{format_date(t['date'])}</td>
-                    <td class="amount-negative">{t['amount']:.2f} {t['currency']}</td>
+                    <td class="amount-negative">{format_amount(t['amount'], t['currency'])}</td>
                     <td>{t['currency']}</td>
                 </tr>
 '''
@@ -1146,6 +1012,6 @@ print_transaction_details(transactions_outside_eu, "Extra-EU transactions")
 print_transaction_details(transactions_unknown_country, "Unknown transactions")
 
 # Refunds
-print(f"\nRefunded transactions: {nb_refunds} | Total: {total_refunds:.2f} EUR")
+print(f"\nRefunded transactions: {nb_refunds} | Total: {format_amount(total_refunds, arg_currency)}")
 for i, t in enumerate(transactions_refunds, start=1):
-    print(f"  {i}. Amount: {t['amount']:.2f} {t['currency']} - Date: {datetime.fromtimestamp(t['date'], pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  {i}. Amount: {format_amount(t['amount'], t['currency'])} - Date: {datetime.fromtimestamp(t['date'], pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}")
