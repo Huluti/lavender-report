@@ -11,7 +11,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: astral-sh/setup-uv@v10
+      # setup-uv publishes only full semver tags, no moving major tag
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: "3.14"
 
