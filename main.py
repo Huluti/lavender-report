@@ -667,7 +667,8 @@ if export_format:
         csv_data = generate_csv_report(
             transactions_in_country, transactions_in_eu_with_vat, transactions_in_eu_without_vat,
             transactions_outside_eu, transactions_unknown_country, transactions_refunds,
-            arg_country, arg_currency, format_date, convert, currency_stats, rates, start_date, set(fx_overrides)
+            arg_country, arg_currency, format_date, convert, currency_stats, rates, start_date, set(fx_overrides),
+            generated_at.strftime('%Y-%m-%d %H:%M:%S')
         )
         with open(output_filename, 'w', newline='', encoding='utf-8') as csvfile:
             writer = csv.writer(csvfile)

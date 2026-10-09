@@ -29,7 +29,8 @@ def _rate_lines(rates, arg_currency, rate_date, manual_rates):
 def generate_csv_report(
     transactions_in_country, transactions_in_eu_with_vat, transactions_in_eu_without_vat,
     transactions_outside_eu, transactions_unknown_country, transactions_refunds,
-    arg_country, arg_currency, format_date, convert, currency_stats, rates, rate_date, manual_rates
+    arg_country, arg_currency, format_date, convert, currency_stats, rates, rate_date, manual_rates,
+    generated_at
 ):
     """Generate CSV report of all transactions."""
     output = []
@@ -133,6 +134,7 @@ def generate_csv_report(
     # Add summary rows: per currency, then converted combined
     output.append([])
     output.append(["SUMMARY"])
+    output.append(["Generated", f"{generated_at} (Europe/Paris)"])
     for currency in sorted(currency_stats):
         stats = currency_stats[currency]
         output.append([f"Payments ({currency})", f"{stats['payments']}", f"{stats['payments_total']:.2f} {currency}"])
