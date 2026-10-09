@@ -28,21 +28,35 @@ STRIPE_SECRET_KEY=your_stripe_secret_key_here
 
 To generate a report for a specific month, run the following command:
 
-`uv run main.py [--country COUNTRY] [--year YEAR] [--month MONTH] [--export {csv,html}] [--output FILENAME]`
+`uv run main.py [--country COUNTRY] [--year YEAR] [--month MONTH] [--export {csv,html}] [--output FILENAME] [--currency CUR] [--fx-rate CUR=RATE] [--locale {en,fr}] [--debug]`
 
 ### Command-Line Arguments
 
+**Period and scope**
+
 | Argument | Type | Description | Default |
 |----------|------|-------------|---------|
-| `--country` | str | Country code for domestic transactions | FR |
-| `--year` | int | Year to report on | Current year |
+| `--country` | str | Your company's two-letter ISO country code, used for the domestic category and the French VAT declaration | FR |
+| `--year` | int | Year to report on | Year of the previous month |
 | `--month` | int | Month to report on | Previous month |
+
+**Output**
+
+| Argument | Type | Description | Default |
+|----------|------|-------------|---------|
 | `--export` | str | Export format: `csv` or `html` | None (console output) |
-| `--output` | str | Output filename for export | Auto-generated |
-| `--currency` | str | Default report currency. All currencies are reported; non-default ones are converted at the official douane.gouv.fr monthly rate | EUR |
-| `--fx-rate` | str | Manual exchange rate for a currency, douane direction (`1 EUR = RATE CUR`, e.g. `USD=1.16`); repeatable, takes precedence over douane.gouv.fr | None |
+| `--output` | str | Output filename for export | `lavender_report_<period>_<generation timestamp>.csv/html` |
 | `--locale` | str | Number formatting for display: `en` (3571.65 EUR) or `fr` (3 571,65 €) | en |
 | `--debug` | flag | Write a full balance-transaction log to `debug_<period>.txt` (all transactions, skipped ones, per-currency fees) | off |
+
+**Currencies**
+
+| Argument | Type | Description | Default |
+|----------|------|-------------|---------|
+| `--currency` | str | Default report currency. All currencies are reported; non-default ones are converted at the official douane.gouv.fr monthly rate | EUR |
+| `--fx-rate` | str | Manual exchange rate for a currency, douane direction (`1 EUR = RATE CUR`, e.g. `USD=1.16`); repeatable, takes precedence over douane.gouv.fr | None |
+
+See [Multiple currencies](#multiple-currencies) for how conversion and rounding work.
 
 ### Caching
 
@@ -93,6 +107,16 @@ uv run main.py --country FR --year 2025 --month 05 --export csv --output report.
 **Export to HTML (French number formatting):**
 ```bash
 uv run main.py --country FR --year 2026 --month 9 --locale fr --export html --output report.html
+```
+
+**Multi-currency report with a manual exchange rate** (e.g. offline, or a currency douane.gouv.fr does not cover):
+```bash
+uv run main.py --year 2026 --month 9 --export html --fx-rate USD=1.16
+```
+
+**Report with a different default currency** (per-currency tabs and conversions are then expressed in that currency):
+```bash
+uv run main.py --year 2026 --month 9 --export html --currency USD
 ```
 
 **Debug a period (full balance-transaction log):**
