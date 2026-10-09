@@ -66,7 +66,7 @@ EU_COUNTRIES = [
 # tax rates) return immutable data, so persist them across runs.
 # Bump CACHE_VERSION whenever the extraction logic below changes, so
 # stale entries are discarded.
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache")
 CACHE_FILE = os.path.join(CACHE_DIR, "charge_details.json")
 
@@ -248,6 +248,8 @@ for balance_transaction in transactions:
     billing_country = None
     vat_number = 'Not available'
     vat_applied = False
+    has_tax_id = False
+    tax_exempt = 'none'
     tax_amount = 0
     customer_email = "No email"
     status = "succeeded"
@@ -266,6 +268,8 @@ for balance_transaction in transactions:
         vat_number = details["vat_number"]
         vat_applied = details["vat_applied"]
         tax_amount = details["tax_amount"]
+        has_tax_id = details.get("has_tax_id", False)
+        tax_exempt = details.get("tax_exempt", "none")
     else:
         details_complete = True
         if source and hasattr(source, 'object'):
@@ -273,10 +277,21 @@ for balance_transaction in transactions:
                     if source.object == 'charge':
                         # Get customer details from charge
                         if source.customer:
-                            customer = stripe.Customer.retrieve(source.customer)
+                            # Expanding tax_ids on the existing retrieve call
+                            # avoids a separate API call per customer
+                            customer = stripe.Customer.retrieve(source.customer, expand=["tax_ids"])
                             customer_email = customer.email or "No email"
                             if customer.address and customer.address.country:
                                 billing_country = customer.address.country
+                            # A tax-exempt or reverse-charge marking is set
+                            # manually by the merchant on the customer, and
+                            # only applies to businesses and organizations
+                            if customer.tax_exempt:
+                                tax_exempt = customer.tax_exempt
+                            # Any registered tax ID (EU VAT, US EIN, GB VAT...)
+                            # identifies a business
+                            if customer.tax_ids and customer.tax_ids.data:
+                                has_tax_id = True
 
                         # Billing address collected at payment time takes
                         # precedence over the saved customer address
@@ -318,8 +333,12 @@ for balance_transaction in transactions:
                                             if tax_rate.country:
                                                 tax_rate_country = tax_rate.country
 
-                                    # Extract VAT number if available
+                                    # Extract VAT number if available; any tax
+                                    # ID on the invoice also marks the customer
+                                    # as a business (extra-EU companies have
+                                    # no EU VAT number)
                                     customer_tax_ids = invoice.customer_tax_ids or []
+                                    has_tax_id = has_tax_id or bool(customer_tax_ids)
                                     for tax_id in customer_tax_ids:
                                         if tax_id.type == "eu_vat":
                                             vat_number = tax_id.value
@@ -346,6 +365,8 @@ for balance_transaction in transactions:
                 "vat_number": vat_number,
                 "vat_applied": vat_applied,
                 "tax_amount": tax_amount,
+                "has_tax_id": has_tax_id,
+                "tax_exempt": tax_exempt,
             }
             charge_details_dirty = True
 
@@ -372,6 +393,22 @@ for balance_transaction in transactions:
     if country in EU_COUNTRIES and not vat_applied and vat_number == "Not available":
         warnings.append("Reverse-charged EU sale without a customer VAT number")
 
+    # B2B detection: a VAT number is only one signal, and extra-EU businesses
+    # never have one. A transaction is B2B when any of these hold:
+    # - an EU VAT number is present on the invoice
+    # - the customer has any registered tax ID (US EIN, GB VAT, ...)
+    # - the merchant marked the customer tax-exempt or reverse-charge
+    # - the sale is intra-EU with no VAT applied (reverse charge is B2B
+    #   by definition, even when the VAT number was not captured)
+    # Businesses without any of these signals (e.g. below a domestic VAT
+    # registration threshold) fall back to B2C.
+    is_b2b = (
+        vat_number != "Not available"
+        or has_tax_id
+        or tax_exempt in ("exempt", "reverse")
+        or (country in EU_COUNTRIES and country != arg_country and not vat_applied)
+    )
+
     # Transaction details dictionary
     transaction_details = {
         "date": balance_transaction.created,
@@ -384,7 +421,7 @@ for balance_transaction in transactions:
         "vat_applied": vat_applied,
         "tax_country": tax_rate_country,
         "tax_amount": tax_amount,
-        "b2b": vat_number != "Not available",
+        "b2b": is_b2b,
         "fee": fee,
         "warnings": warnings,
     }
