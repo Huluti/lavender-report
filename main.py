@@ -222,12 +222,13 @@ for balance_transaction in balance_transactions.auto_paging_iter():
                                     break
 
                     except stripe.error.StripeError as e:
-                        # No invoice payment found or error occurred
-                        pass
+                        print(f"\nError retrieving invoice details for transaction {balance_transaction.id}: {e} - categorized as Unknown")
 
         except stripe.error.StripeError as e:
-            print(f"\nError retrieving details for transaction {balance_transaction.id}: {e}")
-            continue
+            # Do not skip: the transaction is already counted in the totals,
+            # so it must still land in a category (as Unknown) instead of
+            # silently disappearing from the report
+            print(f"\nError retrieving details for transaction {balance_transaction.id}: {e} - categorized as Unknown")
 
     # Transaction details dictionary
     transaction_details = {
