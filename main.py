@@ -8,6 +8,7 @@ import calendar
 import argparse
 import csv
 import html
+import json
 import re
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -47,6 +48,31 @@ EU_COUNTRIES = [
     "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI",
     "ES", "SE"
 ]
+
+# Charge-details cache: the per-charge API lookups (customer, invoice,
+# tax rates) return immutable data, so persist them across runs.
+# Bump CACHE_VERSION whenever the extraction logic below changes, so
+# stale entries are discarded.
+CACHE_VERSION = 1
+CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache")
+CACHE_FILE = os.path.join(CACHE_DIR, "charge_details.json")
+
+
+def load_charge_details_cache():
+    try:
+        with open(CACHE_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if data.get("version") != CACHE_VERSION:
+        return {}
+    return data.get("charges", {})
+
+
+def save_charge_details_cache(cache):
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump({"version": CACHE_VERSION, "charges": cache}, f)
 
 # Convert dates in timestamps (UTC+1)
 def to_timestamp(date_str):
@@ -94,14 +120,22 @@ transactions_outside_eu = []
 transactions_unknown_country = []
 transactions_refunds = []
 
+# Materialize the list once: avoids paging the whole period twice
+# (once to count the transactions, once to process them)
+transactions = list(balance_transactions.auto_paging_iter())
+
 # Initialize progress counter
 progress_count = 0
-total_transactions = len(list(balance_transactions.auto_paging_iter()))
+total_transactions = len(transactions)
 
 print(f"Processing {total_transactions} balance transactions...")
 
+# Charge-details cache shared across the run
+charge_details_cache = load_charge_details_cache()
+charge_details_dirty = False
+
 # Process balance transactions
-for balance_transaction in balance_transactions.auto_paging_iter():
+for balance_transaction in transactions:
     progress_count += 1
     sys.stdout.write(f"\rProcessing transaction {progress_count}/{total_transactions}...")
     sys.stdout.flush()
@@ -182,70 +216,97 @@ for balance_transaction in balance_transactions.auto_paging_iter():
 
     # Get source details (charge, payment_intent, etc.)
     source = balance_transaction.source
-    if source and hasattr(source, 'object'):
-        try:
-            if source.object == 'charge':
-                # Get customer details from charge
-                if source.customer:
-                    customer = stripe.Customer.retrieve(source.customer)
-                    customer_email = customer.email or "No email"
-                    if customer.address and customer.address.country:
-                        billing_country = customer.address.country
+    charge_id = source.id if source and hasattr(source, "id") else balance_transaction.id
 
-                # Billing address collected at payment time takes
-                # precedence over the saved customer address
-                if source.billing_details and source.billing_details.address and source.billing_details.address.country:
-                    billing_country = source.billing_details.address.country
+    # Reuse details fetched for this charge on a previous run instead of
+    # repeating the same immutable API calls
+    details = charge_details_cache.get(charge_id)
+    if details is not None:
+        customer_email = details["customer_email"]
+        billing_country = details["billing_country"]
+        tax_rate_country = details["tax_rate_country"]
+        vat_number = details["vat_number"]
+        vat_applied = details["vat_applied"]
+    else:
+        details_complete = True
+        if source and hasattr(source, 'object'):
+                try:
+                    if source.object == 'charge':
+                        # Get customer details from charge
+                        if source.customer:
+                            customer = stripe.Customer.retrieve(source.customer)
+                            customer_email = customer.email or "No email"
+                            if customer.address and customer.address.country:
+                                billing_country = customer.address.country
 
-                # Get payment intent for invoice details via InvoicePayment
-                if source.payment_intent:
-                    payment_intent_id = source.payment_intent
+                        # Billing address collected at payment time takes
+                        # precedence over the saved customer address
+                        if source.billing_details and source.billing_details.address and source.billing_details.address.country:
+                            billing_country = source.billing_details.address.country
 
-                    # Find invoice through InvoicePayment object
-                    try:
-                        # Search for invoice payments linked to this payment intent
-                        invoice_payments = stripe.InvoicePayment.list(
-                            **{
-                                "payment[payment_intent]": payment_intent_id,
-                                "payment[type]": "payment_intent"
-                            },
-                            limit=1
-                        )
+                        # Get payment intent for invoice details via InvoicePayment
+                        if source.payment_intent:
+                            payment_intent_id = source.payment_intent
 
-                        if invoice_payments.data:
-                            invoice_payment = invoice_payments.data[0]
-                            invoice_id = invoice_payment.invoice
+                            # Find invoice through InvoicePayment object
+                            try:
+                                # Search for invoice payments linked to this payment intent
+                                invoice_payments = stripe.InvoicePayment.list(
+                                    **{
+                                        "payment[payment_intent]": payment_intent_id,
+                                        "payment[type]": "payment_intent"
+                                    },
+                                    limit=1
+                                )
 
-                            # Retrieve the Invoice
-                            invoice = stripe.Invoice.retrieve(invoice_id)
+                                if invoice_payments.data:
+                                    invoice_payment = invoice_payments.data[0]
+                                    invoice_id = invoice_payment.invoice
 
-                            # Extract country from the tax rate used
-                            tax_amounts = invoice.total_taxes or []
-                            for tax in tax_amounts:
-                                if not vat_applied and tax.amount > 0:
-                                    vat_applied = True
-                                tax_rate_details = tax.tax_rate_details
-                                if tax_rate_details:
-                                    # Retrieve the tax rate details
-                                    tax_rate = stripe.TaxRate.retrieve(tax_rate_details.tax_rate)
-                                    if tax_rate.country:
-                                        tax_rate_country = tax_rate.country
+                                    # Retrieve the Invoice
+                                    invoice = stripe.Invoice.retrieve(invoice_id)
 
-                            # Extract VAT number if available
-                            customer_tax_ids = invoice.customer_tax_ids or []
-                            for tax_id in customer_tax_ids:
-                                if tax_id.type == "eu_vat":
-                                    vat_number = tax_id.value
-                                    break
+                                    # Extract country from the tax rate used
+                                    tax_amounts = invoice.total_taxes or []
+                                    for tax in tax_amounts:
+                                        if not vat_applied and tax.amount > 0:
+                                            vat_applied = True
+                                        tax_rate_details = tax.tax_rate_details
+                                        if tax_rate_details:
+                                            # Retrieve the tax rate details
+                                            tax_rate = stripe.TaxRate.retrieve(tax_rate_details.tax_rate)
+                                            if tax_rate.country:
+                                                tax_rate_country = tax_rate.country
 
-                    except stripe.error.StripeError as e:
-                        print(f"\nError retrieving invoice details for transaction {balance_transaction.id}: {e} - categorized as Unknown")
+                                    # Extract VAT number if available
+                                    customer_tax_ids = invoice.customer_tax_ids or []
+                                    for tax_id in customer_tax_ids:
+                                        if tax_id.type == "eu_vat":
+                                            vat_number = tax_id.value
+                                            break
 
-        except stripe.error.StripeError as e:
-            # Do not skip: the transaction is already counted in the totals,
-            # so it must still land in a category (as Unknown) instead of
-            # silently disappearing from the report
-            print(f"\nError retrieving details for transaction {balance_transaction.id}: {e} - categorized as Unknown")
+                            except stripe.error.StripeError as e:
+                                print(f"\nError retrieving invoice details for transaction {balance_transaction.id}: {e} - categorized as Unknown")
+                                details_complete = False
+
+                except stripe.error.StripeError as e:
+                    # Do not skip: the transaction is already counted in the totals,
+                    # so it must still land in a category (as Unknown) instead of
+                    # silently disappearing from the report
+                    print(f"\nError retrieving details for transaction {balance_transaction.id}: {e} - categorized as Unknown")
+                    details_complete = False
+
+        if details_complete:
+            # Only complete fetches are cached: an interrupted one must be
+            # retried on the next run
+            charge_details_cache[charge_id] = {
+                "customer_email": customer_email,
+                "billing_country": billing_country,
+                "tax_rate_country": tax_rate_country,
+                "vat_number": vat_number,
+                "vat_applied": vat_applied,
+            }
+            charge_details_dirty = True
 
     # Classify by the customer's billing address when known; fall back to
     # the tax rate's country. The address is where the customer actually
@@ -299,6 +360,10 @@ for balance_transaction in balance_transactions.auto_paging_iter():
 sys.stdout.write('\r' + ' ' * 50 + '\r')
 sys.stdout.flush()
 print("Processing completed!")
+
+# Persist newly fetched charge details for the next runs
+if charge_details_dirty:
+    save_charge_details_cache(charge_details_cache)
 
 # Fees for the report currency; other currencies stay in fees_by_currency
 total_fees = fees_by_currency.get(arg_currency, 0)
