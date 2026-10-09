@@ -859,6 +859,18 @@ def generate_html_report(
                 <strong>Net Total</strong>
                 <span class="summary-value">{format_amount(total_payments - total_refunds, arg_currency)}</span>
             </div>
+            <div class="summary-item">
+                <strong>Domestic ({arg_country})</strong>
+                <span class="summary-value">{format_amount(sum(t['amount'] for t in transactions_in_country), arg_currency)}</span>
+            </div>
+            <div class="summary-item">
+                <strong>Intra-EU (reverse-charged)</strong>
+                <span class="summary-value">{format_amount(sum(t['amount'] for t in transactions_in_eu_without_vat), arg_currency)}</span>
+            </div>
+            <div class="summary-item">
+                <strong>Extra-EU</strong>
+                <span class="summary-value">{format_amount(sum(t['amount'] for t in transactions_outside_eu), arg_currency)}</span>
+            </div>
         </div>
     </div>
 '''
