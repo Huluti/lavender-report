@@ -55,7 +55,7 @@ EU_COUNTRIES = [
 # tax rates) return immutable data, so persist them across runs.
 # Bump CACHE_VERSION whenever the extraction logic below changes, so
 # stale entries are discarded.
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache")
 CACHE_FILE = os.path.join(CACHE_DIR, "charge_details.json")
 
@@ -94,6 +94,11 @@ def format_amount(value, currency):
         text = f"{value:,.2f}".replace(",", "\u00a0").replace(".", ",")
         return f"{text} {symbol}"
     return f"{value:.2f} {currency}"
+
+
+def ht_amount(t):
+    """HT (ex-VAT) amount of a transaction detail: TTC minus charged tax."""
+    return t["amount"] - t["tax_amount"]
 
 # Convert dates in timestamps (UTC+1)
 def to_timestamp(date_str):
@@ -232,6 +237,7 @@ for balance_transaction in transactions:
     billing_country = None
     vat_number = 'Not available'
     vat_applied = False
+    tax_amount = 0
     customer_email = "No email"
     status = "succeeded"
 
@@ -248,6 +254,7 @@ for balance_transaction in transactions:
         tax_rate_country = details["tax_rate_country"]
         vat_number = details["vat_number"]
         vat_applied = details["vat_applied"]
+        tax_amount = details["tax_amount"]
     else:
         details_complete = True
         if source and hasattr(source, 'object'):
@@ -292,6 +299,7 @@ for balance_transaction in transactions:
                                     for tax in tax_amounts:
                                         if not vat_applied and tax.amount > 0:
                                             vat_applied = True
+                                        tax_amount += tax.amount / 100
                                         tax_rate_details = tax.tax_rate_details
                                         if tax_rate_details:
                                             # Retrieve the tax rate details
@@ -326,6 +334,7 @@ for balance_transaction in transactions:
                 "tax_rate_country": tax_rate_country,
                 "vat_number": vat_number,
                 "vat_applied": vat_applied,
+                "tax_amount": tax_amount,
             }
             charge_details_dirty = True
 
@@ -362,6 +371,9 @@ for balance_transaction in transactions:
         "country": country,
         "vat_number": vat_number,
         "vat_applied": vat_applied,
+        "tax_country": tax_rate_country,
+        "tax_amount": tax_amount,
+        "b2b": vat_number != "Not available",
         "fee": fee,
         "warnings": warnings,
     }
@@ -447,6 +459,22 @@ if other_currency_transactions:
         cur_fee = sum(t['fee'] for t in cur_txns)
         print(f"  {cur}: {len(cur_txns)} transactions | Amount: {format_amount(cur_amount, cur)} | Fees: {format_amount(cur_fee, cur)}")
 
+# French VAT declaration: B2C sales charged French VAT (domestic and EU
+# consumers, mirroring the "particuliers UE avec TVA francaise" line) and
+# the domestic B2C/B2B split on HT bases
+french_b2c_txns = [
+    t for t in transactions_in_country + transactions_in_eu_with_vat
+    if t["tax_country"] == arg_country and t["vat_applied"] and not t["b2b"]
+]
+french_b2c_ht = sum(ht_amount(t) for t in french_b2c_txns)
+french_b2c_tva = sum(t["tax_amount"] for t in french_b2c_txns)
+domestic_b2c_ht = sum(ht_amount(t) for t in transactions_in_country if not t["b2b"])
+domestic_b2b_ht = sum(ht_amount(t) for t in transactions_in_country if t["b2b"])
+print("\nFrench VAT declaration:")
+print(f"  EU consumers with French VAT (HT): {format_amount(french_b2c_ht, arg_currency)} | TVA collected: {format_amount(french_b2c_tva, arg_currency)}")
+print(f"  Domestic B2C (HT): {format_amount(domestic_b2c_ht, arg_currency)}")
+print(f"  Domestic B2B (HT): {format_amount(domestic_b2b_ht, arg_currency)}")
+
 # Classification warnings: possible mismatches to review before declaring
 all_categorized_transactions = (
     transactions_in_country + transactions_in_eu_with_vat + transactions_in_eu_without_vat +
@@ -499,6 +527,7 @@ def generate_category_section(transactions, title):
                     <td>{country_flag(t['country'])} {t['country']}</td>
                     <td>{html.escape(t['vat_number'])}</td>
                     <td>{vat_badge}</td>
+                    <td>{'B2B' if t['b2b'] else 'B2C'}</td>
                     <td>{html.escape(t['email'])}</td>
                     <td>{t['status']}</td>
                     <td>{format_amount(t['fee'], t['currency'])}</td>
@@ -519,6 +548,7 @@ def generate_category_section(transactions, title):
                     <th>Country</th>
                     <th>VAT Number</th>
                     <th>VAT Applied</th>
+                    <th>Type</th>
                     <th>Email</th>
                     <th>Status</th>
                     <th>Fees</th>
@@ -748,6 +778,18 @@ def generate_html_report(
                 <strong>Domestic ({arg_country})</strong>
                 <span class="summary-value">{format_amount(sum(t['amount'] for t in transactions_in_country), arg_currency)}</span>
             </div>'''
+    if any(not t['b2b'] for t in transactions_in_country):
+        vat_cards += f'''
+            <div class="summary-item">
+                <strong>Domestic B2C (HT)</strong>
+                <span class="summary-value">{format_amount(sum(ht_amount(t) for t in transactions_in_country if not t['b2b']), arg_currency)}</span>
+            </div>'''
+    if any(t['b2b'] for t in transactions_in_country):
+        vat_cards += f'''
+            <div class="summary-item">
+                <strong>Domestic B2B (HT)</strong>
+                <span class="summary-value">{format_amount(sum(ht_amount(t) for t in transactions_in_country if t['b2b']), arg_currency)}</span>
+            </div>'''
     if transactions_in_eu_with_vat:
         vat_cards += f'''
             <div class="summary-item">
@@ -769,6 +811,30 @@ def generate_html_report(
                 <strong>Unknown</strong>
                 <span class="summary-value">{format_amount(sum(t['amount'] for t in transactions_unknown_country), arg_currency)}</span>
             </div>'''
+
+    # French VAT declaration group: B2C sales charged French VAT
+    french_vat_group = ""
+    french_b2c_txns = [
+        t for t in transactions_in_country + transactions_in_eu_with_vat
+        if t["tax_country"] == arg_country and t["vat_applied"] and not t["b2b"]
+    ]
+    if french_b2c_txns:
+        french_b2c_ht = sum(ht_amount(t) for t in french_b2c_txns)
+        french_b2c_tva = sum(t["tax_amount"] for t in french_b2c_txns)
+        french_vat_group = f'''
+        <div class="summary-group">
+            <div class="summary-group-label">French VAT declaration</div>
+            <div class="summary-grid">
+            <div class="summary-item">
+                <strong>EU consumers, French VAT (HT)</strong>
+                <span class="summary-value">{format_amount(french_b2c_ht, arg_currency)}</span>
+            </div>
+            <div class="summary-item">
+                <strong>TVA collected (B2C)</strong>
+                <span class="summary-value">{format_amount(french_b2c_tva, arg_currency)}</span>
+            </div>
+            </div>
+        </div>'''
 
     html_content = f'''<!DOCTYPE html>
 <html lang="en">
@@ -921,7 +987,7 @@ def generate_html_report(
             <div class="summary-group-label">VAT categories</div>
             <div class="summary-grid">{vat_cards}
             </div>
-        </div>
+        </div>{french_vat_group}
     </div>
 '''
     
