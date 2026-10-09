@@ -29,11 +29,14 @@ parser.add_argument('--year', type=int, help="Year", default=current_year)
 parser.add_argument('--month', type=int, help="Month", default=last_month)
 parser.add_argument('--export', type=str, choices=['csv', 'html'], help="Export format (csv or html)")
 parser.add_argument('--output', type=str, help="Output filename for export")
+parser.add_argument('--debug', action='store_true', help="Log balance transactions skipped by the type filter")
+parser.add_argument('--currency', type=str, help="Report currency (default: EUR). Transactions in other currencies are listed separately", default="EUR")
 args = parser.parse_args()
 
 arg_country = args.country
 arg_year = args.year
 arg_month = args.month
+arg_currency = args.currency.upper()
 export_format = args.export
 output_filename = args.output
 
@@ -68,6 +71,12 @@ nb_refunds = 0
 total_payments = 0
 total_refunds = 0
 total_fees = 0
+fees_by_currency = {}
+addon_fees_by_currency = {}
+other_currency_transactions = []
+
+# Balance transaction records (populated with --debug)
+debug_transactions = []
 
 # Transaction categories
 transactions_in_country = []
@@ -89,6 +98,34 @@ for balance_transaction in balance_transactions.auto_paging_iter():
     sys.stdout.write(f"\rProcessing transaction {progress_count}/{total_transactions}...")
     sys.stdout.flush()
 
+    # Record the transaction for the --debug log
+    if args.debug:
+        debug_transactions.append({
+            "id": balance_transaction.id,
+            "type": balance_transaction.type,
+            "reporting_category": balance_transaction.reporting_category,
+            "amount": balance_transaction.amount / 100,
+            "fee": balance_transaction.fee / 100,
+            "net": balance_transaction.net / 100,
+            "currency": balance_transaction.currency.upper(),
+            "included": balance_transaction.type in ['charge', 'payment', 'refund'],
+            "date": balance_transaction.created,
+            "description": balance_transaction.description or "",
+        })
+
+    # Accumulate fees per currency. Stripe's Reports fee total covers all
+    # transactions in the period, including fee-only ones (stripe_fee,
+    # stripe_fx_fee, tax_fee) and fee credits on refunds, but figures are
+    # per currency and must not be mixed.
+    bt_currency = balance_transaction.currency.upper()
+    fees_by_currency[bt_currency] = fees_by_currency.get(bt_currency, 0) + balance_transaction.fee / 100
+
+    # Add-on product fees (Stripe Billing, Automatic Tax, Radar, Sigma...)
+    # are separate balance transactions carrying the cost in their amount
+    # with fee=0. Stripe lists them as "Frais supplémentaires Stripe".
+    if balance_transaction.reporting_category == 'fee':
+        addon_fees_by_currency[bt_currency] = addon_fees_by_currency.get(bt_currency, 0) + balance_transaction.amount / 100
+
     # Skip non-payment transactions (transfers, adjustments, etc.)
     if balance_transaction.type not in ['charge', 'payment', 'refund']:
         continue
@@ -97,6 +134,17 @@ for balance_transaction in balance_transactions.auto_paging_iter():
     amount = balance_transaction.amount / 100
     fee = balance_transaction.fee / 100
     currency = balance_transaction.currency.upper()
+
+    # Track transactions outside the report currency separately: mixing
+    # currencies into a single total inflates it (USD amounts summed as EUR)
+    if currency != arg_currency:
+        other_currency_transactions.append({
+            "type": balance_transaction.type,
+            "amount": amount,
+            "fee": fee,
+            "currency": currency,
+        })
+        continue
 
     # Handle refunds separately
     if balance_transaction.type == 'refund':
@@ -114,7 +162,6 @@ for balance_transaction in balance_transactions.auto_paging_iter():
     # Process charges (payments)
     nb_payments += 1
     total_payments += amount
-    total_fees += fee
 
     # Initialize default values
     country = 'Unknown'
@@ -217,11 +264,64 @@ sys.stdout.write('\r' + ' ' * 50 + '\r')
 sys.stdout.flush()
 print("Processing completed!")
 
+# Fees for the report currency; other currencies stay in fees_by_currency
+total_fees = fees_by_currency.get(arg_currency, 0)
+addon_fees = addon_fees_by_currency.get(arg_currency, 0)
+
+if args.debug:
+    skipped = [t for t in debug_transactions if not t['included']]
+    skipped_amount = sum(t['amount'] for t in skipped)
+    skipped_fee = sum(t['fee'] for t in skipped)
+
+    debug_filename = f"debug_{start_date.replace('-', '')}_{end_date.replace('-', '')}.txt"
+    with open(debug_filename, 'w', encoding='utf-8') as debugfile:
+        debugfile.write(f"Lavender Report debug log - {start_date} to {end_date}\n")
+        debugfile.write(f"Window (Europe/Paris): epoch {start_timestamp} to {end_timestamp}\n\n")
+        debugfile.write(
+            f"{'included':<9} {'id':<32} {'type':<28} {'category':<28} "
+            f"{'currency':<9} {'amount':>10} {'fee':>10} {'net':>10}  date\n"
+        )
+        for t in debug_transactions:
+            debugfile.write(
+                f"{'yes' if t['included'] else 'no':<9} {t['id']:<32} {t['type']:<28} "
+                f"{t['reporting_category']:<28} {t['currency']:<9} "
+                f"{t['amount']:>10.2f} {t['fee']:>10.2f} {t['net']:>10.2f}  "
+                f"{datetime.fromtimestamp(t['date'], pytz.utc).strftime('%Y-%m-%d %H:%M:%S')} | {t['description']}\n"
+            )
+        debugfile.write("\nTotals:\n")
+        debugfile.write(f"  Payments ({arg_currency}): {nb_payments} | {total_payments:.2f}\n")
+        debugfile.write(f"  Refunds ({arg_currency}): {nb_refunds} | {total_refunds:.2f}\n")
+        fees_lines = ", ".join(f"{cur}={fees_by_currency[cur]:.2f}" for cur in sorted(fees_by_currency))
+        debugfile.write(f"  Fees per currency: {fees_lines}\n")
+        if addon_fees_by_currency:
+            addon_lines = ", ".join(f"{cur}={addon_fees_by_currency[cur]:.2f}" for cur in sorted(addon_fees_by_currency))
+            debugfile.write(f"  Add-on fees per currency: {addon_lines}\n")
+        debugfile.write(f"  Skipped: {len(skipped)} | amount={skipped_amount:.2f} | fee={skipped_fee:.2f}\n")
+        debugfile.write(f"  Skipped transactions detail:\n")
+        for t in skipped:
+            debugfile.write(
+                f"    {t['id']} | type: {t['type']} | category: {t['reporting_category']} | "
+                f"currency: {t['currency']} | amount: {t['amount']:.2f} | fee: {t['fee']:.2f} | net: {t['net']:.2f} | "
+                f"{datetime.fromtimestamp(t['date'], pytz.utc).strftime('%Y-%m-%d %H:%M:%S')} | {t['description']}\n"
+            )
+    print(f"\nDebug log written to {debug_filename}")
+
 # Summary
 print("\nSummary:")
 print(f"Number of payments: {nb_payments}")
-print(f"Total: {total_payments:.2f} EUR")
-print(f"Total Stripe fees: {total_fees:.2f} EUR")
+print(f"Total: {total_payments:.2f} {arg_currency}")
+print(f"Total Stripe fees: {total_fees:.2f} {arg_currency}")
+if addon_fees:
+    print(f"Add-on Stripe fees (Billing, Automatic Tax, Radar, Sigma...): {addon_fees:.2f} {arg_currency}")
+    print(f"Total Stripe fees incl. add-ons: {total_fees - addon_fees:.2f} {arg_currency}")
+
+if other_currency_transactions:
+    print("\nTransactions in other currencies (excluded from the totals above):")
+    for cur in sorted({t['currency'] for t in other_currency_transactions}):
+        cur_txns = [t for t in other_currency_transactions if t['currency'] == cur]
+        cur_amount = sum(t['amount'] for t in cur_txns)
+        cur_fee = sum(t['fee'] for t in cur_txns)
+        print(f"  {cur}: {len(cur_txns)} transactions | Amount: {cur_amount:.2f} {cur} | Fees: {cur_fee:.2f} {cur}")
 
 # Function to print details for each transaction
 def print_transaction_details(transactions, category_name):
@@ -246,7 +346,7 @@ def format_date(timestamp):
 def generate_csv_report(
     transactions_in_country, transactions_in_eu_with_vat, transactions_in_eu_without_vat,
     transactions_outside_eu, transactions_unknown_country, transactions_refunds,
-    nb_payments, total_payments, total_fees, nb_refunds, total_refunds,
+    nb_payments, total_payments, total_fees, addon_fees, nb_refunds, total_refunds,
     arg_country
 ):
     """Generate CSV report of all transactions."""
@@ -396,6 +496,9 @@ def generate_csv_report(
     output.append(["Total Payments", f"{nb_payments}"])
     output.append(["Total Payment Amount", f"{total_payments:.2f} EUR"])
     output.append(["Total Stripe Fees", f"{total_fees:.2f} EUR"])
+    if addon_fees:
+        output.append(["Add-on Stripe Fees (Billing, Automatic Tax, Radar, Sigma...)", f"{addon_fees:.2f} EUR"])
+        output.append(["Total Stripe Fees incl. add-ons", f"{total_fees - addon_fees:.2f} EUR"])
     output.append(["Total Refunds", f"{nb_refunds}"])
     output.append(["Total Refund Amount", f"{total_refunds:.2f} EUR"])
     output.append(["Net Total", f"{total_payments - total_refunds:.2f} EUR"])
@@ -406,7 +509,7 @@ def generate_csv_report(
 def generate_html_report(
     transactions_in_country, transactions_in_eu_with_vat, transactions_in_eu_without_vat,
     transactions_outside_eu, transactions_unknown_country, transactions_refunds,
-    nb_payments, total_payments, total_fees, nb_refunds, total_refunds,
+    nb_payments, total_payments, total_fees, addon_fees, nb_refunds, total_refunds,
     arg_country, start_date, end_date
 ):
     """Generate HTML report of all transactions."""
@@ -525,6 +628,14 @@ def generate_html_report(
             <div class="summary-item">
                 <strong>Total Stripe Fees</strong>
                 <span class="summary-value">{total_fees:.2f} EUR</span>
+            </div>
+            <div class="summary-item">
+                <strong>Add-on Stripe Fees</strong>
+                <span class="summary-value">{addon_fees:.2f} EUR</span>
+            </div>
+            <div class="summary-item">
+                <strong>Total Stripe Fees incl. add-ons</strong>
+                <span class="summary-value">{total_fees - addon_fees:.2f} EUR</span>
             </div>
             <div class="summary-item">
                 <strong>Number of Refunds</strong>
@@ -821,7 +932,7 @@ if export_format:
         csv_data = generate_csv_report(
             transactions_in_country, transactions_in_eu_with_vat, transactions_in_eu_without_vat,
             transactions_outside_eu, transactions_unknown_country, transactions_refunds,
-            nb_payments, total_payments, total_fees, nb_refunds, total_refunds,
+            nb_payments, total_payments, total_fees, addon_fees, nb_refunds, total_refunds,
             arg_country
         )
         with open(output_filename, 'w', newline='', encoding='utf-8') as csvfile:
@@ -833,7 +944,7 @@ if export_format:
         html_content = generate_html_report(
             transactions_in_country, transactions_in_eu_with_vat, transactions_in_eu_without_vat,
             transactions_outside_eu, transactions_unknown_country, transactions_refunds,
-            nb_payments, total_payments, total_fees, nb_refunds, total_refunds,
+            nb_payments, total_payments, total_fees, addon_fees, nb_refunds, total_refunds,
             arg_country, start_date, end_date
         )
         with open(output_filename, 'w', encoding='utf-8') as htmlfile:
