@@ -26,6 +26,10 @@ Always work with the legal impact in mind:
   keep them gitignored and never include them in commits.
 - **When unsure, ask.** If a change could alter what gets declared,
   flag it to the maintainer before implementing.
+- **Keep the README in sync.** Any change to user-facing behavior
+  (CLI options, defaults, output formats and columns, caching,
+  classification or conversion rules) must be reflected in README.md
+  in the same commit.
 
 Note: this tool assists with reporting; it is not tax advice.
 Confirmation of declaration treatment belongs to an accountant.
