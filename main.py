@@ -329,13 +329,15 @@ for balance_transaction in transactions:
             }
             charge_details_dirty = True
 
-    # Classify by the customer's billing address when known; fall back to
-    # the tax rate's country. The address is where the customer actually
-    # is; the tax rate is what was charged on the invoice.
-    if billing_country:
-        country = billing_country
-    elif tax_rate_country:
+    # Classify by the tax rate actually applied on the invoice, so the
+    # categories stay consistent with the invoicing (and with what gets
+    # declared); fall back to the customer's billing address only when
+    # the invoice carries no tax rate. Mismatches between the two are
+    # reported as warnings below.
+    if tax_rate_country:
         country = tax_rate_country
+    elif billing_country:
+        country = billing_country
 
     # Classification warnings: signals that may contradict the category
     warnings = []

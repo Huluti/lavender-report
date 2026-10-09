@@ -49,7 +49,7 @@ Per-charge details (customer, invoice, tax rates) are immutable, so they are cac
 
 ### Classification and warnings
 
-The transaction country is resolved from the customer's billing address (charge-time address first, then the saved customer address, then the invoice tax rate). The report flags, in the console summary and the CSV/HTML exports:
+The transaction country is resolved from the tax rate applied on the invoice, so the categories mirror what was actually charged and stay consistent with your invoicing; the customer's billing address is used as a fallback when the invoice carries no tax rate. The report flags, in the console summary and the CSV/HTML exports:
 
 - billing address country not matching the tax rate applied on the invoice
 - VAT number prefix not matching the country
