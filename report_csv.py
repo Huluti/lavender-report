@@ -142,8 +142,16 @@ def generate_csv_report(
             output.append([f"Stripe Fees ({currency})", f"{stats['fees']:.2f} {currency}"])
             if stats['addon_fees']:
                 output.append([f"Add-on Stripe Fees ({currency})", f"{stats['addon_fees']:.2f} {currency}"])
-    output.append([f"Combined Total Payments (converted to {arg_currency})", _sum_converted(convert, currency_stats, 'payments_total')])
-    output.append([f"Combined Total Refunds (converted to {arg_currency})", _sum_converted(convert, currency_stats, 'refunds_total')])
+    # Combined totals converted to the default currency: payments and
+    # refunds are converted per transaction (matching the rows above);
+    # fees cover fee-only balance transactions too and are converted
+    # per currency
+    all_transactions = (
+        transactions_in_country + transactions_in_eu_with_vat + transactions_in_eu_without_vat +
+        transactions_outside_eu + transactions_unknown_country
+    )
+    output.append([f"Combined Total Payments (converted to {arg_currency})", _sum_converted_txs(convert, all_transactions)])
+    output.append([f"Combined Total Refunds (converted to {arg_currency})", _sum_converted_txs(convert, transactions_refunds)])
     output.append([f"Combined Stripe Fees (converted to {arg_currency})", _sum_converted(convert, currency_stats, 'fees')])
     output.extend(_rate_lines(rates, arg_currency, rate_date, manual_rates))
 
@@ -173,6 +181,19 @@ def generate_csv_report(
             ])
 
     return output
+
+
+def _sum_converted_txs(convert, transactions):
+    """Converted total over transactions, each conversion rounded to the
+    cent (matching the converted column rows); empty string when some
+    currency has no rate."""
+    total = 0
+    for t in transactions:
+        converted = convert(t['amount'], t['currency'])
+        if converted is None:
+            return ""
+        total += converted
+    return f"{total:.2f}"
 
 
 def _sum_converted(convert, currency_stats, field):

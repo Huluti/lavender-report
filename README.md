@@ -56,6 +56,8 @@ All currencies with activity are classified and reported, never mixed: totals ar
 
 The French VAT declaration figures (EU consumers with French VAT, domestic B2C/B2B HT bases) include foreign-currency sales converted at the official rate, since declarations are filed in the default currency.
 
+Converted amounts are computed and rounded to the cent **per transaction**, so the figures shown in the reports reconcile: category totals, combined totals and the declaration figures all sum the same per-row conversions. Stripe fees are the one exception: they are converted per currency, because the fee totals include fee-only balance transactions that appear in no table.
+
 ### Classification and warnings
 
 The transaction country is resolved from the tax rate applied on the invoice, so the categories mirror what was actually charged and stay consistent with your invoicing; the customer's billing address is used as a fallback when the invoice carries no tax rate. The report flags, in the console summary and the CSV/HTML exports:

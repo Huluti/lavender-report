@@ -36,14 +36,32 @@ def _converted_amount(convert, amount, currency, arg_currency, format_amount):
     return format_amount(converted, arg_currency)
 
 
-def _sum_converted(convert, transactions, field, arg_currency, format_amount):
-    """Converted total over transactions, or a dash when some rate is missing."""
+def _fmt_or_dash(value, arg_currency, format_amount):
+    """Format a converted value, dash when no rate was available."""
+    if value is None:
+        return '&mdash;'
+    return format_amount(value, arg_currency)
+
+
+def _sum_converted_value(convert, transactions, field):
+    """Converted total over transactions (each conversion rounded to the
+    cent, so displayed rows and totals reconcile), or None when some
+    currency has no rate."""
     total = 0
     for t in transactions:
         converted = convert(t[field], t['currency'])
         if converted is None:
-            return '&mdash;'
+            return None
         total += converted
+    return total
+
+
+def _sum_converted(convert, transactions, field, arg_currency, format_amount):
+    """Formatted converted total over transactions, dash when a rate is
+    missing."""
+    total = _sum_converted_value(convert, transactions, field)
+    if total is None:
+        return '&mdash;'
     return format_amount(total, arg_currency)
 
 
@@ -139,8 +157,10 @@ def _converted_total_suffix(convert, transactions, section_currency, arg_currenc
     return f" ({converted} converted)"
 
 
-def _currency_activity_cards(currency, stats, arg_currency, format_amount, show_converted, convert):
-    """Activity + fee cards for one currency, native amounts."""
+def _currency_activity_cards(currency, stats, arg_currency, format_amount, show_converted, convert,
+                             payments_txns=None, refund_txns=None):
+    """Activity + fee cards for one currency, native amounts. Converted
+    cards sum per-transaction conversions, matching the table rows."""
     cards = _card(f"Payments ({currency})", f"{stats['payments']} | {format_amount(stats['payments_total'], currency)}")
     cards += _card(f"Refunds ({currency})", f"{stats['refunds']} | {format_amount(stats['refunds_total'], currency)}")
     cards += _card(f"Net Total ({currency})", format_amount(stats['payments_total'] - stats['refunds_total'], currency))
@@ -148,9 +168,8 @@ def _currency_activity_cards(currency, stats, arg_currency, format_amount, show_
     if stats['addon_fees']:
         cards += _card(f"Add-on Fees ({currency})", format_amount(stats['addon_fees'], currency))
     if show_converted:
-        payments_converted = convert(stats['payments_total'], currency)
-        refunds_converted = convert(stats['refunds_total'], currency)
-        fees_converted = convert(stats['fees'], currency)
+        payments_converted = _sum_converted_value(convert, payments_txns or [], 'amount')
+        refunds_converted = _sum_converted_value(convert, refund_txns or [], 'amount')
         if payments_converted is not None and refunds_converted is not None:
             cards += _card(
                 f"Payments ({arg_currency})",
@@ -160,6 +179,7 @@ def _currency_activity_cards(currency, stats, arg_currency, format_amount, show_
                 f"Net Total ({arg_currency})",
                 format_amount(payments_converted - refunds_converted, arg_currency)
             )
+        fees_converted = convert(stats['fees'], currency)
         if fees_converted is not None:
             cards += _card(f"Stripe Fees ({arg_currency})", format_amount(fees_converted, arg_currency))
     return cards
@@ -212,34 +232,25 @@ def generate_html_report(
             _currency_activity_cards(currency, stats, arg_currency, format_amount, False, convert)
         )
 
-    # Whole situation: combined activity converted to the default currency
-    all_payments = [
-        {"amount": currency_stats[c]['payments_total'], "currency": c}
-        for c in currencies if currency_stats[c]['payments_total']
-    ]
-    all_refunds = [
-        {"amount": currency_stats[c]['refunds_total'], "currency": c}
-        for c in currencies if currency_stats[c]['refunds_total']
-    ]
+    # Whole situation: combined activity converted to the default currency.
+    # Payments and refunds are converted per transaction (same rounding as
+    # the table rows, so the visible figures reconcile); fees cover fee-only
+    # balance transactions too and are converted per currency.
+    payments_converted = _sum_converted_value(convert, all_categorized, 'amount')
+    refunds_converted = _sum_converted_value(convert, transactions_refunds, 'amount')
+    net_converted = (
+        None if payments_converted is None or refunds_converted is None
+        else payments_converted - refunds_converted
+    )
     all_fees = [
         {"amount": currency_stats[c]['fees'], "currency": c}
         for c in currencies if currency_stats[c]['fees']
     ]
     overview_groups += _group(
         f"Whole situation (converted to {arg_currency})",
-        _card("Total Payments", _sum_converted(convert, all_payments, 'amount', arg_currency, format_amount)) +
-        _card("Total Refunds", _sum_converted(convert, all_refunds, 'amount', arg_currency, format_amount)) +
-        _card(
-            "Net Total",
-            _sum_converted(
-                convert,
-                [
-                    {"amount": currency_stats[c]['payments_total'] - currency_stats[c]['refunds_total'], "currency": c}
-                    for c in currencies
-                ],
-                'amount', arg_currency, format_amount
-            )
-        ) +
+        _card("Total Payments", _fmt_or_dash(payments_converted, arg_currency, format_amount)) +
+        _card("Total Refunds", _fmt_or_dash(refunds_converted, arg_currency, format_amount)) +
+        _card("Net Total", _fmt_or_dash(net_converted, arg_currency, format_amount)) +
         _card("Total Stripe Fees", _sum_converted(convert, all_fees, 'amount', arg_currency, format_amount))
     )
 
@@ -290,18 +301,21 @@ def generate_html_report(
         stats = currency_stats[currency]
         show_converted = currency != arg_currency
 
-        currency_groups = ""
-        currency_groups += _group(
-            "Activity",
-            _currency_activity_cards(currency, stats, arg_currency, format_amount, show_converted, convert)
-        )
-
         # VAT categories in native currency
         in_country = by_currency(transactions_in_country, currency)
         eu_vat = by_currency(transactions_in_eu_with_vat, currency)
         eu_no_vat = by_currency(transactions_in_eu_without_vat, currency)
         outside_eu = by_currency(transactions_outside_eu, currency)
         unknown = by_currency(transactions_unknown_country, currency)
+        cur_refunds = by_currency(transactions_refunds, currency)
+        cur_payments = in_country + eu_vat + eu_no_vat + outside_eu + unknown
+
+        currency_groups = ""
+        currency_groups += _group(
+            "Activity",
+            _currency_activity_cards(currency, stats, arg_currency, format_amount, show_converted, convert,
+                                     cur_payments, cur_refunds)
+        )
 
         cur_vat_cards = _card(f"Domestic ({arg_country})", format_amount(sum(t['amount'] for t in in_country), currency))
         if any(not t['b2b'] for t in in_country):
@@ -365,7 +379,6 @@ def generate_html_report(
         )
 
         # Refunds table
-        cur_refunds = by_currency(transactions_refunds, currency)
         refunds_table = ""
         if cur_refunds:
             refunds_converted_header = f"<th>Amount ({arg_currency})</th>" if show_converted else ""
