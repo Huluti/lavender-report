@@ -85,7 +85,7 @@ def generate_category_section(transactions, title, format_amount, format_date, a
     for i, t in enumerate(transactions, start=1):
         vat_badge = "Yes" if t['vat_applied'] else "No"
         if t['warnings']:
-            warning_prefix = f'<span title="{html.escape("; ".join(t["warnings"]))}">&#9888; </span>'
+            warning_prefix = f'<span title="{html.escape("; ".join(t["warnings"]))}">&#9888;&#65039; </span>'
         else:
             warning_prefix = ""
         # Rounded amount for the declaration: the whole-unit rounding
