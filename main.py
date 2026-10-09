@@ -723,6 +723,51 @@ def generate_html_report(
     arg_country, start_date, end_date
 ):
     """Generate HTML report of all transactions."""
+    # Fee cards: add-on fees only appear when they exist
+    fee_cards = f'''
+            <div class="summary-item">
+                <strong>Total Stripe Fees</strong>
+                <span class="summary-value">{format_amount(total_fees, arg_currency)}</span>
+            </div>'''
+    if addon_fees:
+        fee_cards += f'''
+            <div class="summary-item">
+                <strong>Add-on Stripe Fees</strong>
+                <span class="summary-value">{format_amount(addon_fees, arg_currency)}</span>
+            </div>
+            <div class="summary-item">
+                <strong>Total Stripe Fees incl. add-ons</strong>
+                <span class="summary-value">{format_amount(total_fees - addon_fees, arg_currency)}</span>
+            </div>'''
+
+    # VAT category cards: empty categories are omitted
+    vat_cards = f'''
+            <div class="summary-item">
+                <strong>Domestic ({arg_country})</strong>
+                <span class="summary-value">{format_amount(sum(t['amount'] for t in transactions_in_country), arg_currency)}</span>
+            </div>'''
+    if transactions_in_eu_with_vat:
+        vat_cards += f'''
+            <div class="summary-item">
+                <strong>Intra-EU (with VAT)</strong>
+                <span class="summary-value">{format_amount(sum(t['amount'] for t in transactions_in_eu_with_vat), arg_currency)}</span>
+            </div>'''
+    vat_cards += f'''
+            <div class="summary-item">
+                <strong>Intra-EU (reverse-charged)</strong>
+                <span class="summary-value">{format_amount(sum(t['amount'] for t in transactions_in_eu_without_vat), arg_currency)}</span>
+            </div>
+            <div class="summary-item">
+                <strong>Extra-EU</strong>
+                <span class="summary-value">{format_amount(sum(t['amount'] for t in transactions_outside_eu), arg_currency)}</span>
+            </div>'''
+    if transactions_unknown_country:
+        vat_cards += f'''
+            <div class="summary-item">
+                <strong>Unknown</strong>
+                <span class="summary-value">{format_amount(sum(t['amount'] for t in transactions_unknown_country), arg_currency)}</span>
+            </div>'''
+
     html_content = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -756,6 +801,20 @@ def generate_html_report(
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 15px;
+        }}
+        .summary-group {{
+            margin-bottom: 20px;
+        }}
+        .summary-group:last-child {{
+            margin-bottom: 0;
+        }}
+        .summary-group-label {{
+            font-size: 0.8em;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #8898aa;
+            margin-bottom: 8px;
         }}
         .summary-item {{
             background-color: white;
@@ -826,7 +885,9 @@ def generate_html_report(
     
     <div class="summary">
         <h2>Summary</h2>
-        <div class="summary-grid">
+        <div class="summary-group">
+            <div class="summary-group-label">Activity</div>
+            <div class="summary-grid">
             <div class="summary-item">
                 <strong>Number of Payments</strong>
                 <span class="summary-value">{nb_payments}</span>
@@ -834,18 +895,6 @@ def generate_html_report(
             <div class="summary-item">
                 <strong>Total Payments</strong>
                 <span class="summary-value">{format_amount(total_payments, arg_currency)}</span>
-            </div>
-            <div class="summary-item">
-                <strong>Total Stripe Fees</strong>
-                <span class="summary-value">{format_amount(total_fees, arg_currency)}</span>
-            </div>
-            <div class="summary-item">
-                <strong>Add-on Stripe Fees</strong>
-                <span class="summary-value">{format_amount(addon_fees, arg_currency)}</span>
-            </div>
-            <div class="summary-item">
-                <strong>Total Stripe Fees incl. add-ons</strong>
-                <span class="summary-value">{format_amount(total_fees - addon_fees, arg_currency)}</span>
             </div>
             <div class="summary-item">
                 <strong>Number of Refunds</strong>
@@ -859,17 +908,16 @@ def generate_html_report(
                 <strong>Net Total</strong>
                 <span class="summary-value">{format_amount(total_payments - total_refunds, arg_currency)}</span>
             </div>
-            <div class="summary-item">
-                <strong>Domestic ({arg_country})</strong>
-                <span class="summary-value">{format_amount(sum(t['amount'] for t in transactions_in_country), arg_currency)}</span>
             </div>
-            <div class="summary-item">
-                <strong>Intra-EU (reverse-charged)</strong>
-                <span class="summary-value">{format_amount(sum(t['amount'] for t in transactions_in_eu_without_vat), arg_currency)}</span>
+        </div>
+        <div class="summary-group">
+            <div class="summary-group-label">Stripe fees</div>
+            <div class="summary-grid">{fee_cards}
             </div>
-            <div class="summary-item">
-                <strong>Extra-EU</strong>
-                <span class="summary-value">{format_amount(sum(t['amount'] for t in transactions_outside_eu), arg_currency)}</span>
+        </div>
+        <div class="summary-group">
+            <div class="summary-group-label">VAT categories</div>
+            <div class="summary-grid">{vat_cards}
             </div>
         </div>
     </div>
