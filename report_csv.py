@@ -3,136 +3,115 @@
 from decimal import ROUND_HALF_UP, Decimal
 
 
+def _converted(convert, amount, currency):
+    """Converted amount as a display string, empty when no rate exists."""
+    value = convert(amount, currency)
+    return "" if value is None else f"{value:.2f}"
+
+
+def _rate_lines(rates, arg_currency, rate_date, manual_rates):
+    """Rate reference rows for the summary block."""
+    lines = []
+
+    def rate_row(currency):
+        source = "manual" if currency in manual_rates else "douane.gouv.fr"
+        return [f"Rate {currency} ({rate_date}, {source})", f"1 EUR = {rates[currency]} {currency}"]
+
+    for currency in sorted(rates):
+        if currency == "EUR":
+            continue
+        lines.append(rate_row(currency))
+    if arg_currency != "EUR":
+        lines.append(rate_row(arg_currency))
+    return lines
+
+
 def generate_csv_report(
     transactions_in_country, transactions_in_eu_with_vat, transactions_in_eu_without_vat,
     transactions_outside_eu, transactions_unknown_country, transactions_refunds,
-    nb_payments, total_payments, total_fees, addon_fees, nb_refunds, total_refunds,
-    arg_country, format_date
+    arg_country, arg_currency, format_date, convert, currency_stats, rates, rate_date, manual_rates
 ):
     """Generate CSV report of all transactions."""
     output = []
-    
+
     # Write header
     output.append([
-        "Date", "Type", "Amount", "Currency", "Rounded Amount", "Country", 
+        "Date", "Type", "Amount", "Currency", f"Amount ({arg_currency})",
+        f"Rounded Amount ({arg_currency})", "Country",
         "VAT Number", "VAT Applied", "Email", "Status", "Fees", "Category"
     ])
-    
-    # Add domestic transactions
-    domestic_total = sum(t['amount'] for t in transactions_in_country)
-    for t in transactions_in_country:
-        rounded_amount = int(Decimal(str(t['amount'])).quantize(0, ROUND_HALF_UP))
-        output.append([
-            format_date(t['date']),
-            "Payment",
-            f"{t['amount']:.2f}",
-            t['currency'],
-            f"{rounded_amount}",
-            t['country'],
-            t['vat_number'],
-            "Yes" if t['vat_applied'] else "No",
-            t['email'],
-            t['status'],
-            f"{t['fee']:.2f} {t['currency']}",
-            f"Domestic ({arg_country})"
-        ])
-    output.append([
-        f"Domestic ({arg_country}) Total", "", f"{domestic_total:.2f} EUR", "", "", 
-        "", "", "", "", "", "", ""
-    ])
-    
-    # Add EU with VAT transactions
-    eu_vat_total = sum(t['amount'] for t in transactions_in_eu_with_vat)
-    for t in transactions_in_eu_with_vat:
-        rounded_amount = int(Decimal(str(t['amount'])).quantize(0, ROUND_HALF_UP))
-        output.append([
-            format_date(t['date']),
-            "Payment",
-            f"{t['amount']:.2f}",
-            t['currency'],
-            f"{rounded_amount}",
-            t['country'],
-            t['vat_number'],
-            "Yes",
-            t['email'],
-            t['status'],
-            f"{t['fee']:.2f} {t['currency']}",
-            "Intra-EU (with VAT)"
-        ])
-    output.append([
-        "Intra-EU (with VAT) Total", "", f"{eu_vat_total:.2f} EUR", "", "", 
-        "", "", "", "", "", "", ""
-    ])
-    
-    # Add EU without VAT transactions
-    eu_no_vat_total = sum(t['amount'] for t in transactions_in_eu_without_vat)
-    for t in transactions_in_eu_without_vat:
-        rounded_amount = int(Decimal(str(t['amount'])).quantize(0, ROUND_HALF_UP))
-        output.append([
-            format_date(t['date']),
-            "Payment",
-            f"{t['amount']:.2f}",
-            t['currency'],
-            f"{rounded_amount}",
-            t['country'],
-            t['vat_number'],
-            "No",
-            t['email'],
-            t['status'],
-            f"{t['fee']:.2f} {t['currency']}",
-            "Intra-EU (reverse-charged VAT)"
-        ])
-    output.append([
-        "Intra-EU (reverse-charged VAT) Total", "", f"{eu_no_vat_total:.2f} EUR", "", "", 
-        "", "", "", "", "", "", ""
-    ])
-    
-    # Add extra-EU transactions
-    extra_eu_total = sum(t['amount'] for t in transactions_outside_eu)
-    for t in transactions_outside_eu:
-        rounded_amount = int(Decimal(str(t['amount'])).quantize(0, ROUND_HALF_UP))
-        output.append([
-            format_date(t['date']),
-            "Payment",
-            f"{t['amount']:.2f}",
-            t['currency'],
-            f"{rounded_amount}",
-            t['country'],
-            t['vat_number'],
-            "No" if not t['vat_applied'] else "Yes",
-            t['email'],
-            t['status'],
-            f"{t['fee']:.2f} {t['currency']}",
-            "Extra-EU"
-        ])
-    output.append([
-        "Extra-EU Total", "", f"{extra_eu_total:.2f} EUR", "", "", 
-        "", "", "", "", "", "", ""
-    ])
-    
-    # Add unknown country transactions
-    unknown_total = sum(t['amount'] for t in transactions_unknown_country)
-    for t in transactions_unknown_country:
-        rounded_amount = int(Decimal(str(t['amount'])).quantize(0, ROUND_HALF_UP))
-        output.append([
-            format_date(t['date']),
-            "Payment",
-            f"{t['amount']:.2f}",
-            t['currency'],
-            f"{rounded_amount}",
-            t['country'],
-            t['vat_number'],
-            "No" if not t['vat_applied'] else "Yes",
-            t['email'],
-            t['status'],
-            f"{t['fee']:.2f} {t['currency']}",
-            "Unknown"
-        ])
-    output.append([
-        "Unknown Total", "", f"{unknown_total:.2f} EUR", "", "", 
-        "", "", "", "", "", "", ""
-    ])
-    
+
+    def rounded_amount(t):
+        """Whole-unit rounding in the default currency: of the converted
+        amount for non-default currencies, of the native amount otherwise.
+        Empty when no rate is available."""
+        if t['currency'] == arg_currency:
+            return f"{int(Decimal(str(t['amount'])).quantize(0, ROUND_HALF_UP))}"
+        converted = convert(t['amount'], t['currency'])
+        if converted is None:
+            return ""
+        return f"{int(Decimal(str(converted)).quantize(0, ROUND_HALF_UP))}"
+
+    def category_rows(transactions, category_label):
+        rows = []
+        for t in transactions:
+            rows.append([
+                format_date(t['date']),
+                "Payment",
+                f"{t['amount']:.2f}",
+                t['currency'],
+                _converted(convert, t['amount'], t['currency']),
+                rounded_amount(t),
+                t['country'],
+                t['vat_number'],
+                "Yes" if t['vat_applied'] else "No",
+                t['email'],
+                t['status'],
+                f"{t['fee']:.2f} {t['currency']}",
+                category_label
+            ])
+        return rows
+
+    def category_totals(transactions, label):
+        """One total row per currency (never mixed), plus the converted
+        combined total in the default currency."""
+        rows = []
+        totals = {}
+        for t in transactions:
+            totals[t['currency']] = totals.get(t['currency'], 0) + t['amount']
+        for currency in sorted(totals):
+            rows.append([
+                f"{label} Total ({currency})", "",
+                f"{totals[currency]:.2f}", currency, "", "", "", "", "", "", "", "", ""
+            ])
+        converted_total = None
+        converted_sum = 0
+        for t in transactions:
+            value = convert(t['amount'], t['currency'])
+            if value is None:
+                converted_total = None
+                break
+            converted_sum += value
+        else:
+            converted_total = converted_sum
+        if converted_total is not None and len(totals) > 1:
+            rows.append([
+                f"{label} Total (converted to {arg_currency})", "",
+                f"{converted_total:.2f}", arg_currency, "", "", "", "", "", "", "", "", ""
+            ])
+        return rows
+
+    categories = [
+        (transactions_in_country, f"Domestic ({arg_country})"),
+        (transactions_in_eu_with_vat, "Intra-EU (with VAT)"),
+        (transactions_in_eu_without_vat, "Intra-EU (reverse-charged VAT)"),
+        (transactions_outside_eu, "Extra-EU"),
+        (transactions_unknown_country, "Unknown"),
+    ]
+    for transactions, label in categories:
+        output.extend(category_rows(transactions, label))
+        output.extend(category_totals(transactions, label))
+
     # Add refunds
     for t in transactions_refunds:
         output.append([
@@ -140,6 +119,7 @@ def generate_csv_report(
             "Refund",
             f"{t['amount']:.2f}",
             t['currency'],
+            _converted(convert, t['amount'], t['currency']),
             "",
             "",
             "",
@@ -149,19 +129,23 @@ def generate_csv_report(
             "",
             "Refund"
         ])
-    
-    # Add summary row
+
+    # Add summary rows: per currency, then converted combined
     output.append([])
     output.append(["SUMMARY"])
-    output.append(["Total Payments", f"{nb_payments}"])
-    output.append(["Total Payment Amount", f"{total_payments:.2f} EUR"])
-    output.append(["Total Stripe Fees", f"{total_fees:.2f} EUR"])
-    if addon_fees:
-        output.append(["Add-on Stripe Fees (Billing, Automatic Tax, Radar, Sigma...)", f"{addon_fees:.2f} EUR"])
-        output.append(["Total Stripe Fees incl. add-ons", f"{total_fees - addon_fees:.2f} EUR"])
-    output.append(["Total Refunds", f"{nb_refunds}"])
-    output.append(["Total Refund Amount", f"{total_refunds:.2f} EUR"])
-    output.append(["Net Total", f"{total_payments - total_refunds:.2f} EUR"])
+    for currency in sorted(currency_stats):
+        stats = currency_stats[currency]
+        output.append([f"Payments ({currency})", f"{stats['payments']}", f"{stats['payments_total']:.2f} {currency}"])
+        if stats['refunds']:
+            output.append([f"Refunds ({currency})", f"{stats['refunds']}", f"{stats['refunds_total']:.2f} {currency}"])
+        if stats['fees']:
+            output.append([f"Stripe Fees ({currency})", f"{stats['fees']:.2f} {currency}"])
+            if stats['addon_fees']:
+                output.append([f"Add-on Stripe Fees ({currency})", f"{stats['addon_fees']:.2f} {currency}"])
+    output.append([f"Combined Total Payments (converted to {arg_currency})", _sum_converted(convert, currency_stats, 'payments_total')])
+    output.append([f"Combined Total Refunds (converted to {arg_currency})", _sum_converted(convert, currency_stats, 'refunds_total')])
+    output.append([f"Combined Stripe Fees (converted to {arg_currency})", _sum_converted(convert, currency_stats, 'fees')])
+    output.extend(_rate_lines(rates, arg_currency, rate_date, manual_rates))
 
     # Classification warnings
     warned = [t for t in (
@@ -178,6 +162,7 @@ def generate_csv_report(
                 f"{t['amount']:.2f}",
                 t['currency'],
                 "",
+                "",
                 t['country'],
                 t['vat_number'],
                 "",
@@ -188,3 +173,17 @@ def generate_csv_report(
             ])
 
     return output
+
+
+def _sum_converted(convert, currency_stats, field):
+    """Sum a per-currency stat converted to the default currency; empty
+    string when some currency has no rate."""
+    total = 0
+    for currency, stats in currency_stats.items():
+        if not stats.get(field):
+            continue
+        value = convert(stats[field], currency)
+        if value is None:
+            return ""
+        total += value
+    return f"{total:.2f}"

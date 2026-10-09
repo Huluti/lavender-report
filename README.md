@@ -39,13 +39,22 @@ To generate a report for a specific month, run the following command:
 | `--month` | int | Month to report on | Previous month |
 | `--export` | str | Export format: `csv` or `html` | None (console output) |
 | `--output` | str | Output filename for export | Auto-generated |
-| `--currency` | str | Report currency; transactions in other currencies are listed separately | EUR |
+| `--currency` | str | Default report currency. All currencies are reported; non-default ones are converted at the official douane.gouv.fr monthly rate | EUR |
+| `--fx-rate` | str | Manual exchange rate for a currency, douane direction (`1 EUR = RATE CUR`, e.g. `USD=1.16`); repeatable, takes precedence over douane.gouv.fr | None |
 | `--locale` | str | Number formatting for display: `en` (3571.65 EUR) or `fr` (3 571,65 €) | en |
 | `--debug` | flag | Write a full balance-transaction log to `debug_<period>.txt` (all transactions, skipped ones, per-currency fees) | off |
 
 ### Caching
 
 Per-charge details (customer, invoice, tax rates) are immutable, so they are cached in `.cache/charge_details.json` after the first run of a period. Reruns only refetch the balance-transaction list. Delete the `.cache/` directory to force a full refetch.
+
+Fetched exchange rates are cached in `.cache/fx_rates.json`; published douane.gouv.fr rates never change, so they are not refetched.
+
+### Multiple currencies
+
+All currencies with activity are classified and reported, never mixed: totals are kept per currency. Non-default currencies are converted to the default currency with the official monthly rate from [douane.gouv.fr](https://www.douane.gouv.fr/debweb/cf.srv?etape=menuTaux&) (the rate applicable on the first day of the reported month, covering the whole month), which is the rate usable for French VAT declarations. If a rate cannot be fetched (unknown currency, network failure), pass it manually with `--fx-rate CUR=RATE`; amounts in currencies without a rate stay in their original currency and are excluded from converted totals, with a visible warning.
+
+The French VAT declaration figures (EU consumers with French VAT, domestic B2C/B2B HT bases) include foreign-currency sales converted at the official rate, since declarations are filed in the default currency.
 
 ### Classification and warnings
 
@@ -95,12 +104,14 @@ The tool supports exporting reports in two formats:
 
 ### CSV Export
 - Includes all transaction details in a structured format
-- Columns: Date, Type, Amount, Currency, Rounded Amount, Country, VAT Number, VAT Applied, Email, Status, Fees, Category
-- Includes summary totals at the end
+- Columns: Date, Type, Amount, Currency, Amount (default currency, converted at the official rate), Rounded Amount, Country, VAT Number, VAT Applied, Email, Status, Fees, Category
+- Per-category and per-currency totals, plus converted combined totals and the rates used
 - Suitable for spreadsheet analysis
 
 ### HTML Export
 - Beautiful, responsive web page with modern styling
+- One tab per currency plus an Overview tab with the whole situation (per-currency activity, converted combined totals, converted VAT categories and French VAT declaration)
+- Tables show the converted amount column for non-default currencies
 - Color-coded amounts (green for payments, red for refunds)
 - Summary dashboard grouped into Activity, Stripe fees and VAT categories
 - Country flags next to country codes

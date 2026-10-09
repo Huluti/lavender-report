@@ -1,7 +1,6 @@
 import argparse
 import calendar
 import csv
-import json
 import os
 import re
 import sys
@@ -12,6 +11,9 @@ import pytz
 import stripe
 from dotenv import load_dotenv
 
+from cache import load as cache_load
+from cache import save as cache_save
+from fx_rates import get_rates, parse_override
 from report_csv import generate_csv_report
 from report_html import generate_html_report
 
@@ -40,7 +42,8 @@ parser.add_argument('--month', type=int, help="Month", default=default_month)
 parser.add_argument('--export', type=str, choices=['csv', 'html'], help="Export format (csv or html)")
 parser.add_argument('--output', type=str, help="Output filename for export")
 parser.add_argument('--debug', action='store_true', help="Log balance transactions skipped by the type filter")
-parser.add_argument('--currency', type=str, help="Report currency (default: EUR). Transactions in other currencies are listed separately", default="EUR")
+parser.add_argument('--currency', type=str, help="Default report currency (default: EUR). All currencies are reported; non-default ones are converted at the official douane.gouv.fr monthly rate", default="EUR")
+parser.add_argument('--fx-rate', type=str, action='append', metavar='CUR=RATE', help="Manual exchange rate for a currency, in the douane direction (1 EUR = RATE CUR, e.g. USD=1.16). Repeatable; takes precedence over douane.gouv.fr")
 parser.add_argument('--locale', type=str, choices=['en', 'fr'], help="Number formatting for display (en: 3571.65 EUR, fr: 3 571,65 EUR with euro sign)", default="en")
 args = parser.parse_args()
 
@@ -49,6 +52,15 @@ if not 1 <= args.month <= 12:
     parser.error("--month must be between 1 and 12")
 if not re.fullmatch(r"[A-Za-z]{2}", args.country):
     parser.error("--country must be a two-letter ISO 3166-1 code (e.g. FR)")
+
+# Manual exchange-rate overrides (douane direction: 1 EUR = RATE CUR)
+fx_overrides = {}
+for spec in (args.fx_rate or []):
+    try:
+        currency, rate = parse_override(spec)
+    except ValueError as e:
+        parser.error(str(e))
+    fx_overrides[currency] = rate
 
 arg_country = args.country.upper()
 arg_year = args.year
@@ -69,26 +81,7 @@ EU_COUNTRIES = [
 # tax rates) return immutable data, so persist them across runs.
 # Bump CACHE_VERSION whenever the extraction logic below changes, so
 # stale entries are discarded.
-CACHE_VERSION = 3
-CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache")
-CACHE_FILE = os.path.join(CACHE_DIR, "charge_details.json")
-
-
-def load_charge_details_cache():
-    try:
-        with open(CACHE_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    if data.get("version") != CACHE_VERSION:
-        return {}
-    return data.get("charges", {})
-
-
-def save_charge_details_cache(cache):
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump({"version": CACHE_VERSION, "charges": cache}, f)
+CACHE_VERSION = 4
 
 
 CURRENCY_SYMBOLS = {"EUR": "€", "USD": "$", "GBP": "£"}
@@ -132,15 +125,12 @@ balance_transactions = stripe.BalanceTransaction.list(
     expand=['data.source']
 )
 
-# Initialize counters
-nb_payments = 0
-nb_refunds = 0
-total_payments = 0
-total_refunds = 0
-total_fees = 0
+# Initialize counters: activity is tracked per currency; amounts in
+# different currencies are never summed before conversion
+payments_by_currency = {}
+refunds_by_currency = {}
 fees_by_currency = {}
 addon_fees_by_currency = {}
-other_currency_transactions = []
 
 # Balance transaction records (populated with --debug)
 debug_transactions = []
@@ -164,7 +154,7 @@ total_transactions = len(transactions)
 print(f"Processing {total_transactions} balance transactions...")
 
 # Charge-details cache shared across the run
-charge_details_cache = load_charge_details_cache()
+charge_details_cache = cache_load("charge_details", CACHE_VERSION)
 charge_details_dirty = False
 
 # Process balance transactions
@@ -210,21 +200,11 @@ for balance_transaction in transactions:
     fee = balance_transaction.fee / 100
     currency = balance_transaction.currency.upper()
 
-    # Track transactions outside the report currency separately: mixing
-    # currencies into a single total inflates it (USD amounts summed as EUR)
-    if currency != arg_currency:
-        other_currency_transactions.append({
-            "type": balance_transaction.type,
-            "amount": amount,
-            "fee": fee,
-            "currency": currency,
-        })
-        continue
-
     # Handle refunds separately
     if balance_transaction.type == 'refund':
-        total_refunds += abs(amount)  # Refunds are negative amounts
-        nb_refunds += 1
+        refund_stats = refunds_by_currency.setdefault(currency, {"count": 0, "total": 0})
+        refund_stats["count"] += 1
+        refund_stats["total"] += abs(amount)  # Refunds are negative amounts
 
         refund_details = {
             "amount": abs(amount),
@@ -235,8 +215,9 @@ for balance_transaction in transactions:
         continue
 
     # Process charges (payments)
-    nb_payments += 1
-    total_payments += amount
+    payment_stats = payments_by_currency.setdefault(currency, {"count": 0, "total": 0})
+    payment_stats["count"] += 1
+    payment_stats["total"] += amount
 
     # Initialize default values
     country = 'Unknown'
@@ -442,11 +423,79 @@ print("Processing completed!")
 
 # Persist newly fetched charge details for the next runs
 if charge_details_dirty:
-    save_charge_details_cache(charge_details_cache)
+    cache_save("charge_details", CACHE_VERSION, charge_details_cache)
 
-# Fees for the report currency; other currencies stay in fees_by_currency
-total_fees = fees_by_currency.get(arg_currency, 0)
-addon_fees = addon_fees_by_currency.get(arg_currency, 0)
+# Currencies present in the report: every currency with payments,
+# refunds or fees, plus the default currency itself
+currencies = sorted(
+    {t['currency'] for t in (
+        transactions_in_country + transactions_in_eu_with_vat + transactions_in_eu_without_vat +
+        transactions_outside_eu + transactions_unknown_country + transactions_refunds
+    )} |
+    set(fees_by_currency) |
+    set(payments_by_currency) | set(refunds_by_currency) |
+    {arg_currency}
+)
+
+# Official conversion rates for the report period (douane.gouv.fr monthly
+# rates, in the "1 EUR = X CUR" direction). The rate applicable on the
+# period start date covers the whole month.
+print(f"\nResolving exchange rates for {start_date} (douane.gouv.fr)...")
+rates, rate_errors = get_rates(currencies, start_date, fx_overrides)
+for currency in sorted(rates):
+    if currency == "EUR":
+        continue
+    source = "manual override" if currency in fx_overrides else "douane.gouv.fr"
+    print(f"  {currency}: 1 EUR = {rates[currency]} {currency} ({source})")
+for currency in sorted(rate_errors):
+    print(f"  Warning: no rate for {currency}: {rate_errors[currency]}")
+
+if rate_errors:
+    print(
+        "\nWarning: amounts in currencies without a rate are reported in their "
+        "original currency only and are NOT included in converted totals."
+    )
+
+
+def convert(amount, currency):
+    """Convert an amount into the default report currency using the
+    official rate (amount CUR -> amount / rate(CUR) EUR -> * rate(default)).
+    Returns None when no rate is available; original amounts are never
+    silently mixed."""
+    rate_from = rates.get(currency)
+    rate_to = rates.get(arg_currency)
+    if rate_from is None or rate_to is None:
+        return None
+    return float(
+        (Decimal(str(amount)) * rate_to / rate_from).quantize(Decimal("0.01"), ROUND_HALF_UP)
+    )
+
+
+def converted_sum(transactions, field="amount"):
+    """Sum a field over transactions, converted to the default currency.
+    Returns None if any transaction cannot be converted (no rate)."""
+    total = Decimal(0)
+    for t in transactions:
+        converted = convert(t[field], t['currency'])
+        if converted is None:
+            return None
+        total += Decimal(str(converted))
+    return float(total)
+
+
+# Per-currency activity stats for the report cards
+currency_stats = {}
+for currency in currencies:
+    payments = payments_by_currency.get(currency, {"count": 0, "total": 0})
+    refunds = refunds_by_currency.get(currency, {"count": 0, "total": 0})
+    currency_stats[currency] = {
+        "payments": payments["count"],
+        "payments_total": payments["total"],
+        "refunds": refunds["count"],
+        "refunds_total": refunds["total"],
+        "fees": fees_by_currency.get(currency, 0),
+        "addon_fees": addon_fees_by_currency.get(currency, 0),
+    }
 
 if args.debug:
     skipped = [t for t in debug_transactions if not t['included']]
@@ -469,8 +518,11 @@ if args.debug:
                 f"{datetime.fromtimestamp(t['date'], pytz.utc).strftime('%Y-%m-%d %H:%M:%S')} | {t['description']}\n"
             )
         debugfile.write("\nTotals:\n")
-        debugfile.write(f"  Payments ({arg_currency}): {nb_payments} | {total_payments:.2f}\n")
-        debugfile.write(f"  Refunds ({arg_currency}): {nb_refunds} | {total_refunds:.2f}\n")
+        for cur in currencies:
+            payments = payments_by_currency.get(cur, {"count": 0, "total": 0})
+            refunds = refunds_by_currency.get(cur, {"count": 0, "total": 0})
+            debugfile.write(f"  Payments ({cur}): {payments['count']} | {payments['total']:.2f}\n")
+            debugfile.write(f"  Refunds ({cur}): {refunds['count']} | {refunds['total']:.2f}\n")
         fees_lines = ", ".join(f"{cur}={fees_by_currency[cur]:.2f}" for cur in sorted(fees_by_currency))
         debugfile.write(f"  Fees per currency: {fees_lines}\n")
         if addon_fees_by_currency:
@@ -487,37 +539,66 @@ if args.debug:
     print(f"\nDebug log written to {debug_filename}")
 
 # Summary
-print("\nSummary:")
-print(f"Number of payments: {nb_payments}")
-print(f"Total: {format_amount(total_payments, arg_currency)}")
-print(f"Total Stripe fees: {format_amount(total_fees, arg_currency)}")
-if addon_fees:
-    print(f"Add-on Stripe fees (Billing, Automatic Tax, Radar, Sigma...): {format_amount(addon_fees, arg_currency)}")
-    print(f"Total Stripe fees incl. add-ons: {format_amount(total_fees - addon_fees, arg_currency)}")
+print("\nSummary (per currency; never mixed before conversion):")
+for currency in currencies:
+    stats = currency_stats[currency]
+    print(f"  {currency}: {stats['payments']} payments | {format_amount(stats['payments_total'], currency)}"
+          f" | {stats['refunds']} refunds | {format_amount(stats['refunds_total'], currency)}"
+          f" | Fees: {format_amount(stats['fees'], currency)}")
 
-if other_currency_transactions:
-    print("\nTransactions in other currencies (excluded from the totals above):")
-    for cur in sorted({t['currency'] for t in other_currency_transactions}):
-        cur_txns = [t for t in other_currency_transactions if t['currency'] == cur]
-        cur_amount = sum(t['amount'] for t in cur_txns)
-        cur_fee = sum(t['fee'] for t in cur_txns)
-        print(f"  {cur}: {len(cur_txns)} transactions | Amount: {format_amount(cur_amount, cur)} | Fees: {format_amount(cur_fee, cur)}")
+# Whole situation: combined activity converted to the default currency
+# at the official rates
+combined_payments = converted_sum(
+    [t for cat in (
+        transactions_in_country, transactions_in_eu_with_vat, transactions_in_eu_without_vat,
+        transactions_outside_eu, transactions_unknown_country
+    ) for t in cat]
+)
+combined_refunds = converted_sum(transactions_refunds)
+fees_parts = [convert(currency_stats[c]['fees'], c) for c in currencies]
+combined_fees = sum(fees_parts) if all(p is not None for p in fees_parts) else None
+if combined_payments is not None:
+    print(f"\nWhole situation (converted to {arg_currency} at the official rates):")
+    print(f"  Total payments: {format_amount(combined_payments, arg_currency)}")
+    if combined_refunds is not None:
+        print(f"  Total refunds: {format_amount(combined_refunds, arg_currency)}")
+        print(f"  Net total: {format_amount(combined_payments - combined_refunds, arg_currency)}")
+    if combined_fees is not None:
+        print(f"  Total Stripe fees: {format_amount(combined_fees, arg_currency)}")
 
 # French VAT declaration: B2C sales charged French VAT (domestic and EU
 # consumers, mirroring the "particuliers UE avec TVA francaise" line) and
-# the domestic B2C/B2B split on HT bases
+# the domestic B2C/B2B split on HT bases. Figures are converted to the
+# default currency at the official monthly rates: foreign-currency sales
+# are declared converted, never in their original currency.
 french_b2c_txns = [
     t for t in transactions_in_country + transactions_in_eu_with_vat
     if t["tax_country"] == arg_country and t["vat_applied"] and not t["b2b"]
 ]
-french_b2c_ht = sum(ht_amount(t) for t in french_b2c_txns)
-french_b2c_tva = sum(t["tax_amount"] for t in french_b2c_txns)
-domestic_b2c_ht = sum(ht_amount(t) for t in transactions_in_country if not t["b2b"])
-domestic_b2b_ht = sum(ht_amount(t) for t in transactions_in_country if t["b2b"])
-print("\nFrench VAT declaration:")
-print(f"  EU consumers with French VAT (HT): {format_amount(french_b2c_ht, arg_currency)} | TVA collected: {format_amount(french_b2c_tva, arg_currency)}")
-print(f"  Domestic B2C (HT): {format_amount(domestic_b2c_ht, arg_currency)}")
-print(f"  Domestic B2B (HT): {format_amount(domestic_b2b_ht, arg_currency)}")
+french_b2c_ht_sum = converted_sum([
+    {"amount": ht_amount(t), "currency": t["currency"]} for t in french_b2c_txns
+])
+french_b2c_tva_sum = converted_sum([
+    {"amount": t["tax_amount"], "currency": t["currency"]} for t in french_b2c_txns
+])
+domestic_b2c_txns = [t for t in transactions_in_country if not t["b2b"]]
+domestic_b2b_txns = [t for t in transactions_in_country if t["b2b"]]
+domestic_b2c_ht_sum = converted_sum([
+    {"amount": ht_amount(t), "currency": t["currency"]} for t in domestic_b2c_txns
+])
+domestic_b2b_ht_sum = converted_sum([
+    {"amount": ht_amount(t), "currency": t["currency"]} for t in domestic_b2b_txns
+])
+
+print("\nFrench VAT declaration (all currencies converted to {}):".format(arg_currency))
+if french_b2c_ht_sum is not None:
+    print(f"  EU consumers with French VAT (HT): {format_amount(french_b2c_ht_sum, arg_currency)} | TVA collected: {format_amount(french_b2c_tva_sum, arg_currency)}")
+else:
+    print("  EU consumers with French VAT (HT): no rate available for some currencies, see warnings above")
+if domestic_b2c_ht_sum is not None:
+    print(f"  Domestic B2C (HT): {format_amount(domestic_b2c_ht_sum, arg_currency)}")
+if domestic_b2b_ht_sum is not None:
+    print(f"  Domestic B2B (HT): {format_amount(domestic_b2b_ht_sum, arg_currency)}")
 
 # Classification warnings: possible mismatches to review before declaring
 all_categorized_transactions = (
@@ -535,12 +616,25 @@ if warned_transactions:
 
 # Function to print details for each transaction
 def print_transaction_details(transactions, category_name):
-    print(f"\n{category_name}: {len(transactions)} | Total: {format_amount(sum(t['amount'] for t in transactions), arg_currency)}")
+    totals_by_currency = {}
+    for t in transactions:
+        totals_by_currency[t['currency']] = totals_by_currency.get(t['currency'], 0) + t['amount']
+    totals_text = " | ".join(
+        format_amount(totals_by_currency[cur], cur) for cur in sorted(totals_by_currency)
+    ) or format_amount(0, arg_currency)
+    print(f"\n{category_name}: {len(transactions)} | Total: {totals_text}")
     for i, t in enumerate(transactions, start=1):
-        rounded_amount = int(Decimal(str(t['amount'])).quantize(0, ROUND_HALF_UP))
+        # Rounded amount for the declaration: whole-unit rounding in the
+        # default currency, of the converted amount for non-default ones
+        converted = convert(t['amount'], t['currency'])
+        if converted is None:
+            rounded_text = "Rounded: N/A (no rate)"
+        else:
+            rounded_amount = int(Decimal(str(converted)).quantize(0, ROUND_HALF_UP))
+            rounded_text = f"Rounded: {format_amount(rounded_amount, arg_currency)}"
         print(
             f" {i}. Amount: {format_amount(t['amount'], t['currency'])} "
-            f"(Rounded: {format_amount(rounded_amount, t['currency'])}) "
+            f"({rounded_text}) "
             f"- TVA: {t['vat_number']} - Country: {t['country']} "
             f"- Date: {datetime.fromtimestamp(t['date'], pytz.utc).strftime('%Y-%m-%d %H:%M:%S')} "
             f"- Email: {t['email']} - Status: {t['status']} "
@@ -569,8 +663,7 @@ if export_format:
         csv_data = generate_csv_report(
             transactions_in_country, transactions_in_eu_with_vat, transactions_in_eu_without_vat,
             transactions_outside_eu, transactions_unknown_country, transactions_refunds,
-            nb_payments, total_payments, total_fees, addon_fees, nb_refunds, total_refunds,
-            arg_country, format_date
+            arg_country, arg_currency, format_date, convert, currency_stats, rates, start_date, set(fx_overrides)
         )
         with open(output_filename, 'w', newline='', encoding='utf-8') as csvfile:
             writer = csv.writer(csvfile)
@@ -581,8 +674,8 @@ if export_format:
         html_content = generate_html_report(
             transactions_in_country, transactions_in_eu_with_vat, transactions_in_eu_without_vat,
             transactions_outside_eu, transactions_unknown_country, transactions_refunds,
-            nb_payments, total_payments, total_fees, addon_fees, nb_refunds, total_refunds,
-            arg_country, start_date, end_date, arg_currency, format_amount, format_date, ht_amount
+            arg_country, start_date, end_date, arg_currency, format_amount, format_date, ht_amount,
+            convert, currency_stats, rates, set(fx_overrides)
         )
         with open(output_filename, 'w', encoding='utf-8') as htmlfile:
             htmlfile.write(html_content)
@@ -598,6 +691,12 @@ print_transaction_details(transactions_outside_eu, "Extra-EU transactions")
 print_transaction_details(transactions_unknown_country, "Unknown transactions")
 
 # Refunds
-print(f"\nRefunded transactions: {nb_refunds} | Total: {format_amount(total_refunds, arg_currency)}")
+refund_totals_by_currency = {}
+for t in transactions_refunds:
+    refund_totals_by_currency[t['currency']] = refund_totals_by_currency.get(t['currency'], 0) + t['amount']
+refund_totals_text = " | ".join(
+    format_amount(refund_totals_by_currency[cur], cur) for cur in sorted(refund_totals_by_currency)
+) or format_amount(0, arg_currency)
+print(f"\nRefunded transactions: {len(transactions_refunds)} | Total: {refund_totals_text}")
 for i, t in enumerate(transactions_refunds, start=1):
     print(f"  {i}. Amount: {format_amount(t['amount'], t['currency'])} - Date: {datetime.fromtimestamp(t['date'], pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}")
