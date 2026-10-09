@@ -20,15 +20,20 @@ if stripe.api_key is None:
     print("Error: STRIPE_SECRET_KEY environment variable not set.", file=sys.stderr)
     sys.exit(1)
 
-# Parse arguments
+# Parse arguments; the default period is the previous month,
+# rolling the year back when the current month is January
 now = datetime.now()
-current_year = now.year
-last_month = now.month - 1 or 12  # If month is January (1), last month should be December (12)
+if now.month == 1:
+    default_year = now.year - 1
+    default_month = 12
+else:
+    default_year = now.year
+    default_month = now.month - 1
 
 parser = argparse.ArgumentParser(description="Lavender Report")
 parser.add_argument('--country', type=str, help="Country", default="FR")
-parser.add_argument('--year', type=int, help="Year", default=current_year)
-parser.add_argument('--month', type=int, help="Month", default=last_month)
+parser.add_argument('--year', type=int, help="Year", default=default_year)
+parser.add_argument('--month', type=int, help="Month", default=default_month)
 parser.add_argument('--export', type=str, choices=['csv', 'html'], help="Export format (csv or html)")
 parser.add_argument('--output', type=str, help="Output filename for export")
 parser.add_argument('--debug', action='store_true', help="Log balance transactions skipped by the type filter")
@@ -36,7 +41,13 @@ parser.add_argument('--currency', type=str, help="Report currency (default: EUR)
 parser.add_argument('--locale', type=str, choices=['en', 'fr'], help="Number formatting for display (en: 3571.65 EUR, fr: 3 571,65 EUR with euro sign)", default="en")
 args = parser.parse_args()
 
-arg_country = args.country
+# Validate arguments before touching the Stripe API
+if not 1 <= args.month <= 12:
+    parser.error("--month must be between 1 and 12")
+if not re.fullmatch(r"[A-Za-z]{2}", args.country):
+    parser.error("--country must be a two-letter ISO 3166-1 code (e.g. FR)")
+
+arg_country = args.country.upper()
 arg_year = args.year
 arg_month = args.month
 arg_currency = args.currency.upper()
