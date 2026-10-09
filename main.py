@@ -8,6 +8,7 @@ import calendar
 import argparse
 import csv
 import html
+import re
 from decimal import Decimal, ROUND_HALF_UP
 
 load_dotenv()
@@ -39,6 +40,13 @@ arg_month = args.month
 arg_currency = args.currency.upper()
 export_format = args.export
 output_filename = args.output
+
+# EU member states (the company's own country is handled separately)
+EU_COUNTRIES = [
+    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "DE", "GR", "HU",
+    "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI",
+    "ES", "SE"
+]
 
 # Convert dates in timestamps (UTC+1)
 def to_timestamp(date_str):
@@ -165,6 +173,8 @@ for balance_transaction in balance_transactions.auto_paging_iter():
 
     # Initialize default values
     country = 'Unknown'
+    tax_rate_country = None
+    billing_country = None
     vat_number = 'Not available'
     vat_applied = False
     customer_email = "No email"
@@ -175,10 +185,17 @@ for balance_transaction in balance_transactions.auto_paging_iter():
     if source and hasattr(source, 'object'):
         try:
             if source.object == 'charge':
-                # Get customer email from charge
+                # Get customer details from charge
                 if source.customer:
                     customer = stripe.Customer.retrieve(source.customer)
                     customer_email = customer.email or "No email"
+                    if customer.address and customer.address.country:
+                        billing_country = customer.address.country
+
+                # Billing address collected at payment time takes
+                # precedence over the saved customer address
+                if source.billing_details and source.billing_details.address and source.billing_details.address.country:
+                    billing_country = source.billing_details.address.country
 
                 # Get payment intent for invoice details via InvoicePayment
                 if source.payment_intent:
@@ -212,7 +229,7 @@ for balance_transaction in balance_transactions.auto_paging_iter():
                                     # Retrieve the tax rate details
                                     tax_rate = stripe.TaxRate.retrieve(tax_rate_details.tax_rate)
                                     if tax_rate.country:
-                                        country = tax_rate.country
+                                        tax_rate_country = tax_rate.country
 
                             # Extract VAT number if available
                             customer_tax_ids = invoice.customer_tax_ids or []
@@ -230,6 +247,27 @@ for balance_transaction in balance_transactions.auto_paging_iter():
             # silently disappearing from the report
             print(f"\nError retrieving details for transaction {balance_transaction.id}: {e} - categorized as Unknown")
 
+    # Classify by the customer's billing address when known; fall back to
+    # the tax rate's country. The address is where the customer actually
+    # is; the tax rate is what was charged on the invoice.
+    if billing_country:
+        country = billing_country
+    elif tax_rate_country:
+        country = tax_rate_country
+
+    # Classification warnings: signals that may contradict the category
+    warnings = []
+    if billing_country and tax_rate_country and billing_country != tax_rate_country:
+        warnings.append(
+            f"Billing address country {billing_country} does not match tax rate country {tax_rate_country}"
+        )
+    if vat_number != "Not available":
+        vat_prefix = re.match(r"([A-Za-z]{2})", vat_number)
+        if vat_prefix and vat_prefix.group(1).upper() != country:
+            warnings.append(f"VAT number prefix {vat_prefix.group(1).upper()} does not match country {country}")
+    if country in EU_COUNTRIES and not vat_applied and vat_number == "Not available":
+        warnings.append("Reverse-charged EU sale without a customer VAT number")
+
     # Transaction details dictionary
     transaction_details = {
         "date": balance_transaction.created,
@@ -241,16 +279,13 @@ for balance_transaction in balance_transactions.auto_paging_iter():
         "vat_number": vat_number,
         "vat_applied": vat_applied,
         "fee": fee,
+        "warnings": warnings,
     }
 
     # Categorize transaction
     if country == arg_country:
         transactions_in_country.append(transaction_details)
-    elif country in [
-        "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "DE", "GR", "HU",
-        "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI",
-        "ES", "SE"
-    ]:
+    elif country in EU_COUNTRIES:
         if vat_applied:
             transactions_in_eu_with_vat.append(transaction_details)
         else:
@@ -323,6 +358,20 @@ if other_currency_transactions:
         cur_amount = sum(t['amount'] for t in cur_txns)
         cur_fee = sum(t['fee'] for t in cur_txns)
         print(f"  {cur}: {len(cur_txns)} transactions | Amount: {cur_amount:.2f} {cur} | Fees: {cur_fee:.2f} {cur}")
+
+# Classification warnings: possible mismatches to review before declaring
+all_categorized_transactions = (
+    transactions_in_country + transactions_in_eu_with_vat + transactions_in_eu_without_vat +
+    transactions_outside_eu + transactions_unknown_country
+)
+warned_transactions = [t for t in all_categorized_transactions if t["warnings"]]
+if warned_transactions:
+    print(f"\nWarnings ({len(warned_transactions)}) - possible classification mismatches, review before declaring:")
+    for t in warned_transactions:
+        print(
+            f"  {datetime.fromtimestamp(t['date'], pytz.utc).strftime('%Y-%m-%d %H:%M:%S')} | "
+            f"{t['amount']:.2f} {t['currency']} | {t['country']} | {t['email']} | {'; '.join(t['warnings'])}"
+        )
 
 # Function to print details for each transaction
 def print_transaction_details(transactions, category_name):
@@ -503,7 +552,31 @@ def generate_csv_report(
     output.append(["Total Refunds", f"{nb_refunds}"])
     output.append(["Total Refund Amount", f"{total_refunds:.2f} EUR"])
     output.append(["Net Total", f"{total_payments - total_refunds:.2f} EUR"])
-    
+
+    # Classification warnings
+    warned = [t for t in (
+        transactions_in_country + transactions_in_eu_with_vat + transactions_in_eu_without_vat +
+        transactions_outside_eu + transactions_unknown_country
+    ) if t["warnings"]]
+    if warned:
+        output.append([])
+        output.append([f"WARNINGS ({len(warned)}) - possible classification mismatches, review before declaring"])
+        for t in warned:
+            output.append([
+                format_date(t['date']),
+                "Payment",
+                f"{t['amount']:.2f}",
+                t['currency'],
+                "",
+                t['country'],
+                t['vat_number'],
+                "",
+                t['email'],
+                t['status'],
+                "",
+                "; ".join(t['warnings'])
+            ])
+
     return output
 
 
@@ -651,6 +724,46 @@ def generate_html_report(
                 <span class="summary-value">{total_payments - total_refunds:.2f} EUR</span>
             </div>
         </div>
+    </div>
+'''
+    
+    # Classification warnings box
+    warned = [t for t in (
+        transactions_in_country + transactions_in_eu_with_vat + transactions_in_eu_without_vat +
+        transactions_outside_eu + transactions_unknown_country
+    ) if t["warnings"]]
+    if warned:
+        html_content += f'''
+    <div class="category-section" style="background-color: #fff3cd; padding: 15px; border-radius: 8px;">
+        <div class="category-title" style="color: #856404;">
+            Warnings ({len(warned)}) - possible classification mismatches, review before declaring
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Amount</th>
+                    <th>Country</th>
+                    <th>VAT Number</th>
+                    <th>Email</th>
+                    <th>Warning</th>
+                </tr>
+            </thead>
+            <tbody>
+'''
+        for t in warned:
+            html_content += f'''
+                <tr>
+                    <td>{format_date(t['date'])}</td>
+                    <td>{t['amount']:.2f} {t['currency']}</td>
+                    <td>{t['country']}</td>
+                    <td>{html.escape(t['vat_number'])}</td>
+                    <td>{html.escape(t['email'])}</td>
+                    <td>{html.escape('; '.join(t['warnings']))}</td>
+                </tr>
+'''
+        html_content += '''            </tbody>
+        </table>
     </div>
 '''
     
