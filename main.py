@@ -458,6 +458,13 @@ def format_date(timestamp):
     return datetime.fromtimestamp(timestamp, pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
 
 
+def country_flag(country):
+    """Flag emoji for an ISO country code, empty string otherwise."""
+    if len(country) == 2 and country.isalpha() and country.isupper():
+        return chr(0x1F1E6 + ord(country[0]) - ord('A')) + chr(0x1F1E6 + ord(country[1]) - ord('A'))
+    return ""
+
+
 def generate_csv_report(
     transactions_in_country, transactions_in_eu_with_vat, transactions_in_eu_without_vat,
     transactions_outside_eu, transactions_unknown_country, transactions_refunds,
@@ -821,7 +828,7 @@ def generate_html_report(
                 <tr>
                     <td>{format_date(t['date'])}</td>
                     <td>{t['amount']:.2f} {t['currency']}</td>
-                    <td>{t['country']}</td>
+                    <td>{country_flag(t['country'])} {t['country']}</td>
                     <td>{html.escape(t['vat_number'])}</td>
                     <td>{html.escape(t['email'])}</td>
                     <td>{html.escape('; '.join(t['warnings']))}</td>
@@ -866,7 +873,7 @@ def generate_html_report(
                     <td>{format_date(t['date'])}</td>
                     <td class="amount-positive">{t['amount']:.2f} {t['currency']}</td>
                     <td>{rounded_amount} {t['currency']}</td>
-                    <td>{t['country']}</td>
+                    <td>{country_flag(t['country'])} {t['country']}</td>
                     <td>{html.escape(t['vat_number'])}</td>
                     <td>{vat_badge}</td>
                     <td>{html.escape(t['email'])}</td>
@@ -911,7 +918,7 @@ def generate_html_report(
                     <td>{format_date(t['date'])}</td>
                     <td class="amount-positive">{t['amount']:.2f} {t['currency']}</td>
                     <td>{rounded_amount} {t['currency']}</td>
-                    <td>{t['country']}</td>
+                    <td>{country_flag(t['country'])} {t['country']}</td>
                     <td>{html.escape(t['vat_number'])}</td>
                     <td>{html.escape(t['email'])}</td>
                     <td>{t['status']}</td>
@@ -955,7 +962,7 @@ def generate_html_report(
                     <td>{format_date(t['date'])}</td>
                     <td class="amount-positive">{t['amount']:.2f} {t['currency']}</td>
                     <td>{rounded_amount} {t['currency']}</td>
-                    <td>{t['country']}</td>
+                    <td>{country_flag(t['country'])} {t['country']}</td>
                     <td>{html.escape(t['vat_number'])}</td>
                     <td>{html.escape(t['email'])}</td>
                     <td>{t['status']}</td>
@@ -999,7 +1006,7 @@ def generate_html_report(
                     <td>{format_date(t['date'])}</td>
                     <td class="amount-positive">{t['amount']:.2f} {t['currency']}</td>
                     <td>{rounded_amount} {t['currency']}</td>
-                    <td>{t['country']}</td>
+                    <td>{country_flag(t['country'])} {t['country']}</td>
                     <td>{html.escape(t['vat_number'])}</td>
                     <td>{html.escape(t['email'])}</td>
                     <td>{t['status']}</td>
@@ -1043,7 +1050,7 @@ def generate_html_report(
                     <td>{format_date(t['date'])}</td>
                     <td class="amount-positive">{t['amount']:.2f} {t['currency']}</td>
                     <td>{rounded_amount} {t['currency']}</td>
-                    <td>{t['country']}</td>
+                    <td>{country_flag(t['country'])} {t['country']}</td>
                     <td>{html.escape(t['vat_number'])}</td>
                     <td>{html.escape(t['email'])}</td>
                     <td>{t['status']}</td>
