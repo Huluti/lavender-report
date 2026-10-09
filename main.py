@@ -518,9 +518,13 @@ def generate_category_section(transactions, title):
     for i, t in enumerate(transactions, start=1):
         rounded_amount = int(Decimal(str(t['amount'])).quantize(0, ROUND_HALF_UP))
         vat_badge = "Yes" if t['vat_applied'] else "No"
+        if t['warnings']:
+            warning_prefix = f'<span title="{html.escape("; ".join(t["warnings"]))}">⚠️ </span>'
+        else:
+            warning_prefix = ""
         rows += f'''
                 <tr>
-                    <td>{i}</td>
+                    <td>{warning_prefix}{i}</td>
                     <td>{format_date(t['date'])}</td>
                     <td class="amount-positive">{format_amount(t['amount'], t['currency'])}</td>
                     <td>{format_amount(rounded_amount, t['currency'])}</td>
