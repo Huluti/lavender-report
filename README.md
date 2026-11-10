@@ -74,7 +74,7 @@ Converted amounts are computed and rounded to the cent **per transaction**, so t
 
 ### Classification and warnings
 
-The transaction country is resolved from the tax rate applied on the invoice, so the categories mirror what was actually charged and stay consistent with your invoicing; the customer's billing address is used as a fallback when the invoice carries no tax rate. The report flags, in the console summary and the CSV/HTML exports:
+The transaction country is resolved from the tax rate applied on the invoice, so the categories mirror what was actually charged and stay consistent with your invoicing. The billing country is taken from the address printed on the invoice, then from the saved customer address, and only as a last resort from the payment method's billing country (usually the card issuing country, which can mislead, e.g. a foreign-issued card); it is used as the classification fallback when the invoice carries no tax rate. The report flags, in the console summary and the CSV/HTML exports:
 
 - billing address country not matching the tax rate applied on the invoice
 - VAT number prefix not matching the country

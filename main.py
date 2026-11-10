@@ -81,7 +81,7 @@ EU_COUNTRIES = [
 # tax rates) return immutable data, so persist them across runs.
 # Bump CACHE_VERSION whenever the extraction logic below changes, so
 # stale entries are discarded.
-CACHE_VERSION = 4
+CACHE_VERSION = 5
 
 
 CURRENCY_SYMBOLS = {"EUR": "€", "USD": "$", "GBP": "£"}
@@ -270,9 +270,11 @@ for balance_transaction in transactions:
                             if customer.tax_ids and customer.tax_ids.data:
                                 has_tax_id = True
 
-                        # Billing address collected at payment time takes
-                        # precedence over the saved customer address
-                        if source.billing_details and source.billing_details.address and source.billing_details.address.country:
+                        # The payment method's billing country (usually the
+                        # card issuing country) is only a last-resort signal,
+                        # used when neither the customer nor the invoice
+                        # carries an address
+                        if billing_country is None and source.billing_details and source.billing_details.address and source.billing_details.address.country:
                             billing_country = source.billing_details.address.country
 
                         # Get payment intent for invoice details via InvoicePayment
@@ -296,6 +298,12 @@ for balance_transaction in transactions:
 
                                     # Retrieve the Invoice
                                     invoice = stripe.Invoice.retrieve(invoice_id)
+
+                                    # The address printed on the invoice is the
+                                    # invoicing address; it takes precedence
+                                    # over the saved customer address
+                                    if invoice.customer_address and invoice.customer_address.country:
+                                        billing_country = invoice.customer_address.country
 
                                     # Extract country from the tax rate used
                                     tax_amounts = invoice.total_taxes or []
